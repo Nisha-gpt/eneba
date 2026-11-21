@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: keyshift-market
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
