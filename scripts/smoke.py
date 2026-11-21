@@ -128,4 +128,51 @@ assert not keys.intersection(last_order["items"][0]["keys"])
 assert request(guest, product_path)["offers"][0]["stock"] == 0
 request(buyer, "/checkout", checkout_payload(1), expected=409)
 assert len(request(buyer, "/orders")) == 2
-print("PASS: homepage, filters, sorting, pagination, typo search, authentication, ownership, payment decline, unique keys, checkout retries, and concurrent stock exhaustion.")
+assert detail["payment_method"] == "card"
+review_path = "/products/elden-ring/reviews"
+assert request(guest, review_path)["average"] is None
+review = {"rating": 4, "body": "A useful test review for this product."}
+request(guest, review_path, review, expected=401)
+request(buyer, review_path, {**review, "rating": 6}, expected=400)
+assert request(buyer, review_path, review)["average"] == 4
+assert request(buyer, review_path, {**review, "rating": 5})["count"] == 1
+public_reviews = request(guest, review_path)
+assert public_reviews["average"] == 5 and "email" not in public_reviews["items"][0]
+recommendations = request(guest, "/products/elden-ring/recommendations")
+next_picks = request(guest, "/products/elden-ring/recommendations?page=2")
+assert recommendations["hasMore"] and len(recommendations["items"]) == 5
+assert {p["id"] for p in recommendations["items"]}.isdisjoint(p["id"] for p in next_picks["items"])
+
+wallet_offer = offers[1]
+wallet_items = [{"offer": wallet_offer["id"], "quantity": 3}]
+wallet_payload = {"requestId": str(uuid.uuid4()), "payment": "test_wallet", "items": wallet_items,
+                  "expectedCents": wallet_offer["cents"] * 3, "deliveryEmail": "delivery@example.test"}
+request(guest, "/wallet", expected=401)
+assert request(buyer, "/wallet")["cents"] == 0
+request(buyer, "/checkout", wallet_payload, expected=402)
+assert request(guest, product_path)["offers"][1]["stock"] == wallet_offer["stock"]
+
+funding = {"requestId": str(uuid.uuid4())}
+with concurrent.futures.ThreadPoolExecutor(2) as pool:
+    credits = list(pool.map(lambda _: request(buyer, "/wallet/fund", funding), range(2)))
+assert {credit["cents"] for credit in credits} == {2500}
+
+def wallet_checkout(payload):
+    try:
+        return request(buyer, "/checkout", payload)["id"]
+    except AssertionError as error:
+        assert error.args[0][1] == 402, error
+        return None
+
+with concurrent.futures.ThreadPoolExecutor(3) as pool:
+    payments = list(pool.map(wallet_checkout, [wallet_payload, wallet_payload,
+                                               {**wallet_payload, "requestId": str(uuid.uuid4())}]))
+assert len({order for order in payments if order}) == 1
+assert request(buyer, "/wallet")["cents"] == 2500 - wallet_payload["expectedCents"]
+assert request(other, "/wallet")["cents"] == 0
+wallet_order = request(buyer, f"/orders/{next(order for order in payments if order)}")
+assert wallet_order["payment_method"] == "wallet" and wallet_order["delivery_email"] == "delivery@example.test"
+assert len(set(wallet_order["items"][0]["keys"])) == 3
+request(other, f"/orders/{wallet_order['id']}", expected=404)
+
+print("PASS: catalog, reviews, recommendations, authorization, card outcomes, checkout retries, stock exhaustion, wallet funding, concurrent wallet debit and order ownership.")

@@ -13,6 +13,7 @@
       "routes": [
         { "handle": "filesystem" },
         { "src": "/(assets|art)(/.*)?", "status": 404 },
+        { "src": "/(favicon[.]svg|apple-touch-icon[.]png)", "status": 404 },
         { "src": "/.*", "dest": "/index.html" }
       ]
     }

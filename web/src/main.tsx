@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, createContext, useContext } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift, Star, Wallet, CreditCard, Trash2 } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
 import '@fontsource-variable/space-grotesk';
 import './style.css';
@@ -12,7 +12,7 @@ type Offer = {id:number; seller:string; cents:number; stock:number};
 type Item = {offer:number; quantity:number; name:string; seller:string; cents:number; slug:string};
 type User = {email:string};
 type Order = {id:number; cents:number; created_at:string};
-type OrderDetail = Order & {items:{id:number; product:string; seller:string; cents:number; quantity:number; keys:string[]; artwork:string; platform:string; region:string; activation:string}[]};
+type OrderDetail = Order & {payment_method:'card'|'wallet'; delivery_email:string|null; items:{id:number; product:string; seller:string; cents:number; quantity:number; keys:string[]; artwork:string; platform:string; region:string; activation:string}[]};
 type Banner = {eyebrow:string; headline:string; subtitle:string; action:string; destination:string; artwork:string};
 
 const money = (cents:number) => new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(cents/100);
@@ -54,7 +54,7 @@ function saved<T>(key:string, fallback:T):T {
   catch { return fallback; }
 }
 
-type Market = {wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
+type Market = {deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
 const MarketContext = createContext<Market>(null!);
 const useMarket = () => useContext(MarketContext);
 const ErrorText = ({message}:{message:string}) => <p className="feedback error" role="alert">{message}</p>;
@@ -68,7 +68,7 @@ function Breadcrumb({children}:{children:ReactNode}) {
 
 function Brand() {
   return <Link to="/" className="brand" aria-label="Eneba home">
-    <span className="eneba-mark" aria-hidden="true"><i/><i/><i/></span><span>eneba</span>
+    <img className="eneba-mark" src="/favicon.svg" alt=""/><span>eneba</span>
   </Link>;
 }
 
@@ -108,7 +108,7 @@ function CategoryDrawer({categories,onClose,error}:{categories:Category[];onClos
     else if(lastCategory.current) document.getElementById(lastCategory.current.id)?.focus();
   },[parent]);
   return <Drawer title={parent?.name??'Categories'} onClose={onClose}
-    heading={!parent?<span className="brand" aria-hidden="true"><span className="eneba-mark"><i/><i/><i/></span><span>eneba</span></span>:undefined}
+    heading={!parent?<span className="brand" aria-hidden="true"><img className="eneba-mark" src="/favicon.svg" alt=""/><span>eneba</span></span>:undefined}
     leading={parent&&<button aria-label="Back to categories" ref={back} onClick={()=>setParent(null)}><ChevronLeft size={18}/></button>}>
     <nav className="drawer-links" aria-label={parent?.name??'Categories'}>
       <Link to={parent?categoryPath(parent.slug):'/store'} onClick={onClose}>All offers</Link>
@@ -303,6 +303,11 @@ function Store() {
   if(category) request.set('category',category);
   else request.delete('category');
   const {data,error,previous} = useData<Listing>('/products?'+request);
+  useEffect(()=>{
+    if(!data?.category) return;
+    document.title=data.category.name+' | Eneba internship marketplace recreation';
+    return ()=>{document.title='Eneba — Internship marketplace recreation';};
+  },[data?.category?.name]);
   const facets = data?.facets ?? (previous?.category?.slug===category ? previous?.facets : undefined);
   const page = Number(params.get('page') || '1');
   const query = params.get('q') || '';
@@ -357,32 +362,204 @@ function Store() {
   </div>;
 }
 
+type ProductDetail = Product & {offers:Offer[];release_date:string|null};
+type ReviewSummary = {count:number;average:number|null;items:{id:number;rating:number;body:string;updated_at:string}[]};
+
+function Recommendations({slug,title='Gamers also viewed'}:{slug:string;title?:string}) {
+  const path='/products/'+encodeURIComponent(slug)+'/recommendations';
+  const {data,error}=useData<{items:Product[];hasMore:boolean}>(path);
+  const [extra,setExtra]=useState<Product[]>([]);
+  const [page,setPage]=useState(2);
+  const [more,setMore]=useState<boolean>();
+  const [busy,setBusy]=useState(false);
+  const [failure,setFailure]=useState('');
+  async function loadMore() {
+    setBusy(true);
+    setFailure('');
+    try {
+      const next=await api<{items:Product[];hasMore:boolean}>(path+'?page='+page);
+      setExtra(previous=>[...previous,...next.items]);
+      setMore(next.hasMore);
+      setPage(page+1);
+    } catch(error){setFailure((error as Error).message);}
+    finally{setBusy(false);}
+  }
+  return <section className="product-section">
+    <h2>{title}</h2>
+    {error?<ErrorText message={error}/>:!data?<Loading/>:!data.items.length?<p>No recommendations available.</p>:
+      <div className="grid product-recommendations">{[...data.items,...extra].map(item=><Card key={item.id} product={item}/>)}</div>}
+    {failure&&<ErrorText message={failure}/>}
+    {(more??data?.hasMore)&&<div className="load-recommendations"><button className="button secondary" disabled={busy} onClick={loadMore}>{busy?'Loading…':'Load more'}</button></div>}
+  </section>;
+}
+
+function ProductReviews({slug}:{slug:string}) {
+  const {user}=useMarket();
+  const path='/products/'+encodeURIComponent(slug)+'/reviews';
+  const {data,error}=useData<ReviewSummary>(path);
+  const [current,setCurrent]=useState<ReviewSummary>();
+  const [open,setOpen]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [failure,setFailure]=useState('');
+  const [notice,setNotice]=useState('');
+  const reviews=current??data;
+  async function submit(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body=String(form.get('body')??'').trim();
+    if([...body].length<10){
+      setFailure('Write at least 10 characters.');
+      return;
+    }
+    setBusy(true);
+    setFailure('');
+    try {
+      setCurrent(await api<ReviewSummary>(path,{rating:Number(form.get('rating')),body}));
+      setOpen(false);
+      setNotice('Your review was saved.');
+    } catch(error){setFailure((error as Error).message);}
+    finally{setBusy(false);}
+  }
+  return <section className="product-section" id="reviews">
+    <div className="section-heading"><h2>Reviews</h2>
+      {user ? <button className="button secondary" aria-expanded={open} onClick={()=>{setOpen(!open);setNotice('');setFailure('');}}>{open?'Cancel':'Review now'}</button>
+        : <Link className="button secondary" to={'/login?product='+encodeURIComponent(slug)}>Sign in to review</Link>}
+    </div>
+    <div className="product-panel review-summary">
+      {error?<ErrorText message={error}/>:!reviews?<Loading/>:<>
+        <div className="review-score"><Star size={21}/><strong>{reviews.average===null?'No ratings yet':reviews.average.toFixed(1)+' / 5'}</strong><span>{reviews.count} {reviews.count===1?'review':'reviews'}</span></div>
+        {!reviews.count&&<p>Be the first to review this product.</p>}
+        {reviews.count>reviews.items.length&&<small>Showing the {reviews.items.length} most recent reviews.</small>}
+        {reviews.items.map(review=><article className="product-review" key={review.id}>
+          <div><strong>{review.rating} / 5</strong><span>{new Date(review.updated_at).toLocaleDateString()}</span></div>
+          <p>{review.body}</p>
+        </article>)}
+      </>}
+      {notice&&<p role="status">{notice}</p>}
+      {user&&open&&<form onSubmit={submit} className="review-form">
+        <label>Rating<select name="rating" required defaultValue=""><option disabled value="">Select a rating</option>{[5,4,3,2,1].map(rating=><option key={rating} value={rating}>{rating} / 5</option>)}</select></label>
+        <label>Your review<textarea name="body" rows={4} placeholder="Share your experience with this product…" required minLength={10} maxLength={1000}/></label>
+        <small>Submitting again updates your review.</small>
+        {failure&&<ErrorText message={failure}/>}
+        <button className="button primary" disabled={busy}>{busy?'Saving…':'Save review'}</button>
+      </form>}
+    </div>
+  </section>;
+}
+
 function ProductPage() {
   const {slug}=useParams();
-  const {data,error}=useData<Product & {offers:Offer[]}>('/products/'+slug);
-  const {cart,setCart,notice}=useMarket();
-  function add(p:Product,o:Offer) {
+  const {data,error}=useData<ProductDetail>('/products/'+encodeURIComponent(slug??''));
+  const {cart,setCart,notice,setQuickOrder}=useMarket();
+  const navigate=useNavigate();
+  const [tab,setTab]=useState<'description'|'activation'>('description');
+  useEffect(()=>setTab('description'),[slug]);
+  useEffect(()=>{
+    if(!data) return;
+    document.title=data.name+' | Eneba internship marketplace recreation';
+    if(window.location.hash==='#reviews') document.getElementById('reviews')?.scrollIntoView();
+    return ()=>{document.title='Eneba — Internship marketplace recreation';};
+  },[data]);
+
+  function purchase(p:Product,o:Offer,buyNow=false) {
+    if (!o.stock) return;
+    if (buyNow) {
+      setQuickOrder({offer:o.id,quantity:1,name:p.name,seller:o.seller,cents:o.cents,slug:p.slug});
+      navigate('/cart?mode=buy-now');
+      return;
+    }
     const existing=cart.find(i=>i.offer===o.id);
     if (existing && existing.quantity>=Math.min(o.stock,20)) {notice('You have reached the available quantity.'); return;}
+    if (!existing&&cart.length>=20) {notice('Your cart can hold up to 20 offers.'); return;}
     const item={offer:o.id,quantity:(existing?.quantity||0)+1,name:p.name,seller:o.seller,cents:o.cents,slug:p.slug};
     setCart(existing ? cart.map(i=>i.offer===o.id?item:i) : [...cart,item]);
-    notice(`${p.name} added to your cart.`);
+    navigate('/cart');
   }
   if (error) return <ErrorText message={error}/>;
   if (!data) return <Loading/>;
-  return <div className="inner"><Breadcrumb><Link to="/store">Store</Link><span>/</span>{data.name}</Breadcrumb>
-    <div className="product-layout">
-      <div className={'poster detail-art tone-'+data.id%6}><span className="poster-fallback">{data.name}</span><ProductArtwork product={data}/></div>
-      <div><div className="eyebrow section-kicker">{data.genre}</div><h1>{data.name}</h1>
-        <div className="pills"><span><Gamepad2 size={17}/>{data.platform}</span><span>{data.region}</span><span><KeyRound size={16}/>Digital key</span></div>
-        <p className="description">{data.description}</p>
-        {Object.keys(data.attributes).length>0&&<dl className="product-attributes">
-          {Object.entries(filterNames).filter(([key])=>data.attributes[key]).map(([key,label])=><div key={key}><dt>{label}</dt><dd>{data.attributes[key]}</dd></div>)}
-        </dl>}<details><summary>Activation information</summary><p>{data.activation} This demo provides sample keys only.</p></details>
-        <h2 className="offer-title">Seller offers</h2>
-        {data.offers.map(o=><div className="offer" key={o.id}><div><strong>{o.seller}</strong><small>{o.stock ? `${o.stock} available` : 'Out of stock'}</small></div><strong>{money(o.cents)}</strong><button className="button primary" disabled={!o.stock} onClick={()=>add(data,o)}>Add to cart</button></div>)}
+  const available=data.offers.filter(offer=>offer.stock>0);
+  const featured=available[0];
+  const others=available.slice(1);
+  const soldOut=data.offers.filter(offer=>offer.stock===0);
+  const attrs=data.attributes;
+  function offerRow(offer:Offer) {
+    return <article className="seller-row" key={offer.id} aria-label={offer.seller}>
+      <div className="seller-identity"><span className="seller-avatar" aria-hidden="true">{offer.seller.slice(0,1).toUpperCase()}</span>
+        <div><strong>{offer.seller}</strong><small>{offer.stock?`${offer.stock} available`:'Out of stock'}</small></div></div>
+      <strong className="seller-price">{money(offer.cents)}</strong>
+      <div className="seller-actions">
+        <button className="button primary" disabled={!offer.stock} onClick={()=>purchase(data!,offer,true)}>Buy now</button>
+        <button className="button secondary" disabled={!offer.stock} onClick={()=>purchase(data!,offer)}>Add to cart</button>
       </div>
+    </article>;
+  }
+  const tabs=['description','activation'] as const;
+  return <div className="inner product-page">
+    <Breadcrumb><Link to="/store">Store</Link><span>/</span>{data.name}</Breadcrumb>
+    <div className="product-columns">
+      <section className="product-overview">
+        <div className={'poster detail-art tone-'+data.id%6}><span className="poster-fallback">{data.name}</span><ProductArtwork product={data}/><span className="tag">{data.platform}</span></div>
+        <div>
+          <h1>{data.name}</h1>
+          <p className="product-byline">{[attrs.edition,data.platform,data.region].filter(Boolean).join(' · ')}</p>
+          <dl className="product-facts">
+            <div><Globe size={19}/><dt>Activation region</dt><dd>{data.region==='Global'?'Global activation':`Use an account in ${attrs.country&&attrs.country!=='Worldwide' ? attrs.country : data.region}.`}</dd></div>
+            <div><Gamepad2 size={19}/><dt>Platform</dt><dd>{data.platform}</dd></div>
+            <div><KeyRound size={19}/><dt>Digital delivery</dt><dd>Test key available in your order after payment.</dd></div>
+            {attrs.os && <div><Monitor size={19}/><dt>Operating system</dt><dd>{attrs.os}</dd></div>}
+          </dl>
+          <a className="activation-link" href="#product-details" onClick={()=>setTab('activation')}>View activation guide <ArrowRight size={16}/></a>
+        </div>
+      </section>
+      <aside className="featured-offer product-panel" aria-label="Featured offer">
+        <h2>Featured offer</h2>
+        {featured ? <>
+          <p>Sold by <strong>{featured.seller}</strong></p>
+          <strong className="featured-price">{money(featured.cents)}</strong>
+          <button className="button primary" onClick={()=>purchase(data,featured,true)}>Buy now</button>
+          <button className="button secondary" onClick={()=>purchase(data,featured)}>Add to cart</button>
+          {others.length>0&&<a className="more-offers" href="#seller-offers">{others.length} more {others.length===1?'offer':'offers'} from {money(others[0].cents)} <ArrowRight size={16}/></a>}
+          <small className="featured-payment"><ShieldCheck size={16}/> Test card or Eneba Wallet · No real charges</small>
+        </> : <p>Out of stock. No seller has keys available right now.</p>}
+      </aside>
+      <section className="product-section offer-comparison" id="seller-offers">
+        <h2>Seller offers</h2>
+        {featured&&<><h3>Recommended offer</h3><p>Lowest available price.</p>{offerRow(featured)}</>}
+        {others.length>0&&<><h3>Other available offers</h3>{others.map(offerRow)}</>}
+        {soldOut.length>0&&<><h3>Sold-out offers</h3>{soldOut.map(offerRow)}</>}
+        {!data.offers.length&&<p>No seller offers yet.</p>}
+      </section>
     </div>
+    <Recommendations key={data.slug} slug={data.slug}/>
+    <ProductReviews key={data.slug} slug={data.slug}/>
+    <section className="product-section" id="product-details">
+      <h2>Product Details</h2>
+      <div className="product-panel">
+        <div className="product-tabs" role="tablist" aria-label="Product details">
+          {tabs.map((id,index)=><button key={id} type="button" role="tab" id={'tab-'+id} aria-controls={'panel-'+id} aria-selected={tab===id} tabIndex={tab===id?0:-1}
+            onClick={()=>setTab(id)} onKeyDown={event=>{
+              const position=event.key==='Home'?0:event.key==='End'?1:['ArrowLeft','ArrowRight'].includes(event.key)?1-index:-1;
+              if(position<0) return;
+              event.preventDefault();
+              const next=tabs[position];
+              setTab(next);
+              document.getElementById('tab-'+next)?.focus();
+            }}>{id==='description'?'Description':'Activation guide'}</button>)}
+        </div>
+        <div className="tab-content" id={'panel-'+tab} role="tabpanel" aria-labelledby={'tab-'+tab} tabIndex={0}>
+          {tab==='description'?<p>{data.description}</p>:<><h3>Activation on {data.platform}</h3><p>{data.activation}</p><p>Keys delivered by this internship recreation are test keys and cannot be redeemed.</p></>}
+        </div>
+      </div>
+    </section>
+    <section className="product-section">
+      <h2>Other details</h2>
+      <dl className="product-panel other-details">
+        <div><dt>Release date</dt><dd>{data.release_date ? new Date(data.release_date+'T00:00:00Z').toLocaleDateString(undefined,{timeZone:'UTC',dateStyle:'medium'}) : 'Not listed'}</dd></div>
+        <div><dt>Platform</dt><dd>{data.platform}</dd></div><div><dt>Region</dt><dd>{data.region}</dd></div>
+        <div><dt>Category</dt><dd>{data.genre}</dd></div>
+        {Object.entries(filterNames).filter(([key])=>attrs[key]).map(([key,label])=><div key={key}><dt>{label}</dt><dd>{attrs[key]}</dd></div>)}
+      </dl>
+    </section>
   </div>;
 }
 
@@ -396,7 +573,11 @@ function Auth() {
   const [password,setPassword]=useState('');
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
-  const next=params.get('next')==='checkout' ? '/checkout' : params.get('next')==='cart' ? '/cart' : '/orders';
+  const product=params.get('product');
+  const destination=params.get('next');
+  const next=product&&/^[a-z0-9-]{1,100}$/.test(product) ? '/product/'+encodeURIComponent(product)+'#reviews'
+    : destination==='buy-now' ? '/checkout?mode=buy-now'
+    : destination==='checkout' ? '/checkout' : destination==='cart' ? '/cart' : '/orders';
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError('');setBusy(true);
@@ -412,12 +593,12 @@ function Auth() {
       <label>Password<input type="password" name="password" value={password} onChange={event=>setPassword(event.target.value)} required minLength={8} maxLength={72} autoComplete={register?'new-password':'current-password'}/></label>
       <button className="button primary" disabled={busy}>{busy?'Please wait…':register?'Create account':'Sign in'}</button>
     </form>
-    <p>{register?'Already registered?':'New to Eneba?'} <Link to={(register?'/login':'/register')+(next==='/orders'?'':'?next='+next.slice(1))}>{register?'Sign in':'Create an account'}</Link></p>
+    <p>{register?'Already registered?':'New to Eneba?'} <Link to={(register?'/login':'/register')+(product?'?product='+encodeURIComponent(product):next==='/orders'?'':'?next='+destination)}>{register?'Sign in':'Create an account'}</Link></p>
   </section>;
 }
 
-type CheckoutQuote = {cents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number}[]};
-type Scenario = 'test_card_approved' | 'test_card_declined';
+type CheckoutQuote = {cents:number;serviceFeeCents:number;discountCents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number;artwork:string|null;platform:string|null;region:string|null}[]};
+type Scenario = 'test_card_approved' | 'test_card_declined' | 'test_wallet';
 type PendingPayment = {basket:string;scenario:Scenario;cents:number;id:string};
 type CardField = 'name' | 'number' | 'expiry' | 'cvc';
 const testCards: Record<string,Scenario> = {'4242424242424242':'test_card_approved','0000000000000000':'test_card_declined'};
@@ -426,8 +607,54 @@ function digits(value:string, limit:number) {
   return value.replace(/\D/g,'').slice(0,limit);
 }
 
+function TestWallet({email,amount,switchToCard}:{email:string;amount:number|undefined;switchToCard:()=>void}) {
+  const {data,error}=useData<{cents:number;topUpCents:number}>('/wallet');
+  const [funded,setFunded]=useState<{cents:number;topUpCents:number}>();
+  const [busy,setBusy]=useState(false);
+  const [failure,setFailure]=useState('');
+  const inFlight=useRef(false);
+  const balance=funded??data;
+  async function addFunds() {
+    if(inFlight.current)return;
+    inFlight.current=true;
+    setBusy(true);
+    setFailure('');
+    const key='eneba.wallet-funding';
+    const previous=saved<{email:string;id:string}|null>(key,null);
+    const id=previous?.email===email?previous.id:crypto.randomUUID();
+    try {
+      localStorage.setItem(key,JSON.stringify({email,id}));
+      setFunded(await api<{cents:number;topUpCents:number}>('/wallet/fund',{requestId:id}));
+      localStorage.removeItem(key);
+    } catch(err) {
+      if(err instanceof RequestError&&err.status===409) localStorage.removeItem(key);
+      setFailure((err as Error).message);
+    } finally {
+      inFlight.current=false;
+      setBusy(false);
+    }
+  }
+  return <div className="test-wallet">
+    {error?<ErrorText message={error}/>:!balance?<Loading/>:<>
+      <div><strong>Available test balance</strong><strong>{money(balance.cents)}</strong></div>
+      <button type="button" className="button secondary" disabled={busy} onClick={addFunds}>{busy?'Adding funds…':'Add '+money(balance.topUpCents)+' in test funds'}</button>
+      {amount!==undefined&&balance.cents<amount&&<p>Insufficient test balance. <button type="button" className="text-button" onClick={switchToCard}>Switch to card</button></p>}
+      {failure&&<ErrorText message={failure}/>}
+    </>}
+  </div>;
+}
+
 function Cart({checkout=false}:{checkout?:boolean}) {
-  const {cart,setCart,user,sessionError}=useMarket();
+  const {cart:regularCart,setCart,user,sessionError,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail}=useMarket();
+  const [params]=useSearchParams();
+  const quick=params.get('mode')==='buy-now';
+  const cart=quick?(quickOrder?[quickOrder]:[]):regularCart;
+  const signIn='/login?next='+(quick?'buy-now':'checkout');
+  const cartPath=quick?'/cart?mode=buy-now':'/cart';
+  const paymentPath=quick?'/checkout?mode=buy-now':'/checkout';
+  const email=deliveryEmail??user?.email??'';
+  const [method,setMethod]=useState<'card'|'wallet'>();
+  function selectMethod(next:'card'|'wallet') {setMethod(next);setError('');}
   const [card,setCard]=useState({name:'',number:'',expiry:'',cvc:''});
   const [invalid,setInvalid]=useState<Partial<Record<CardField,string>>>({});
   const [busy,setBusy]=useState(false);
@@ -439,14 +666,13 @@ function Cart({checkout=false}:{checkout?:boolean}) {
   const navigate=useNavigate();
   const items=cart.map(({offer,quantity})=>({offer,quantity})).sort((a,b)=>a.offer-b.offer);
   const itemJSON=JSON.stringify(items);
-  const basket=JSON.stringify({email:user?.email,items});
+  const basket=JSON.stringify({account:user?.email,deliveryEmail:email,items});
   const savedPayment=saved<PendingPayment|null>('keyshift.checkout',null);
   const pending=savedPayment?.basket===basket?savedPayment:null;
-  const total=cart.reduce((sum,i)=>sum+i.quantity*i.cents,0);
   const unavailable=quote?.items.some(i=>!i.name || i.available<i.quantity);
   const payable=pending?.cents ?? quote?.cents;
   useEffect(()=>{
-    if (!checkout || !user || itemJSON==='[]') return;
+    if (itemJSON==='[]') return;
     const controller=new AbortController();
     setQuote(undefined);
     setQuoteError('');
@@ -455,11 +681,12 @@ function Cart({checkout=false}:{checkout?:boolean}) {
         if (!controller.signal.aborted) setQuoteError((err as Error).message);
       });
     return ()=>controller.abort();
-  },[checkout,user,itemJSON,quoteVersion]);
+  },[itemJSON,quoteVersion]);
 
   function quantity(offer:number,value:number) {
     if (!Number.isInteger(value) || value<1 || value>20) return;
-    setCart(cart.map(i=>i.offer===offer?{...i,quantity:value}:i));
+    if(quick&&quickOrder) setQuickOrder({...quickOrder,quantity:value});
+    else setCart(cart.map(i=>i.offer===offer?{...i,quantity:value}:i));
   }
 
   function update(field:CardField,value:string) {
@@ -470,9 +697,14 @@ function Cart({checkout=false}:{checkout?:boolean}) {
 
   async function buy(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (inFlight.current || payable===undefined || (!pending && (!quote || unavailable))) return;
+    if (inFlight.current || !method || payable===undefined || (!pending && (!quote || unavailable))) return;
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())){
+      setError('Add a valid delivery email in the cart.');
+      return;
+    }
+    const scenario=method==='wallet'?'test_wallet':testCards[digits(card.number,16)];
+    if(method==='card'){
     const problems:Partial<Record<CardField,string>>={};
-    const scenario=testCards[digits(card.number,16)];
     if (!card.name.trim()) problems.name='Enter a cardholder name.';
     if (!scenario) problems.number='Use one of the card numbers in Test payment details.';
     const now=new Date();
@@ -486,8 +718,9 @@ function Cart({checkout=false}:{checkout?:boolean}) {
       document.getElementById('test-card-'+first)?.focus();
       return;
     }
+    }
     if (pending && pending.scenario!==scenario) {
-      setError('The previous payment could not be confirmed. Retry with the same test card first.');
+      setError('The previous payment could not be confirmed. Retry with the same method and test details first.');
       return;
     }
     inFlight.current=true;
@@ -496,13 +729,14 @@ function Cart({checkout=false}:{checkout?:boolean}) {
     const id=pending?.id ?? crypto.randomUUID();
     try {
       localStorage.setItem('keyshift.checkout',JSON.stringify({basket,scenario,cents:payable,id}));
-      const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id});
-      setCart([]);
+      const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id,deliveryEmail:email.trim()});
+      if(quick) setQuickOrder(null);
+      else setCart([]);
       localStorage.removeItem('keyshift.checkout');
       navigate('/orders/'+order.id,{replace:true});
     } catch (err) {
       if (err instanceof RequestError && err.status===401) {
-        navigate('/login?next=checkout');
+        navigate(signIn);
       } else {
         if (err instanceof RequestError && [400,402,409].includes(err.status)) {
           localStorage.removeItem('keyshift.checkout');
@@ -522,56 +756,111 @@ function Cart({checkout=false}:{checkout?:boolean}) {
     'aria-describedby':invalid[field]?'test-error-'+field:undefined,
   });
 
-  return <div className="inner"><Breadcrumb>{checkout?<><Link to="/cart">Cart</Link><span>/</span>Checkout</>:'Cart'}</Breadcrumb>
-    <h1>{checkout?'Checkout':'Your cart'}</h1>
-    {!cart.length ? <Empty title="Your cart is empty"><Link className="button primary" to="/store">Browse games<ArrowRight size={18}/></Link></Empty> :
-      <div className="cart-layout">
-        {checkout ? <div>
-          {sessionError && <ErrorText message={sessionError}/>}
-          {user===undefined ? <Loading/> : !user ? <div className="summary"><h2>Sign in to continue</h2><Link className="button primary" to="/login?next=checkout">Sign in to checkout</Link></div> :
-          <form className="payment-panel" onSubmit={buy} noValidate autoComplete="off">
-            <div className="payment-heading"><h2>Card payment</h2><span className="test-mode"><ShieldCheck size={16}/>Test mode — no real charges</span></div>
-            <details className="payment-help"><summary>Test payment details</summary>
-              <dl><dt>Successful payment</dt><dd><code>4242 4242 4242 4242</code></dd><dt>Declined payment</dt><dd><code>0000 0000 0000 0000</code></dd></dl>
-              <p>Use any test name, a future expiry date, and any three digits for CVC.</p>
-            </details>
-            {error && <ErrorText message={error}/>}
-            <fieldset disabled={busy}>
-              <label>Cardholder name<input {...fieldProps('name')} value={card.name} onChange={e=>update('name',e.target.value)} maxLength={80} placeholder="Cardholder name" required/>{fieldError('name')}</label>
-              <label>Card number<input {...fieldProps('number')} inputMode="numeric" value={card.number} onChange={e=>update('number',digits(e.target.value,16).match(/.{1,4}/g)?.join(' ')||'')} placeholder="0000 0000 0000 0000" required/>{fieldError('number')}</label>
-              <div className="card-fields">
-                <label>Expiry date<input {...fieldProps('expiry')} inputMode="numeric" value={card.expiry} onChange={e=>{const value=digits(e.target.value,4);update('expiry',value.length>2?value.slice(0,2)+'/'+value.slice(2):value);}} placeholder="MM/YY" required/>{fieldError('expiry')}</label>
-                <label>CVC<input {...fieldProps('cvc')} type="password" inputMode="numeric" value={card.cvc} onChange={e=>update('cvc',digits(e.target.value,3))} placeholder="•••" required/>{fieldError('cvc')}</label>
-              </div>
-              <button className="button primary" disabled={payable===undefined || (!pending && unavailable)}>{busy?'Processing…':payable!==undefined?'Pay '+money(payable):'Pay'}<ArrowRight size={18}/></button>
-            </fieldset>
-          </form>}
-          <Link className="back-link" to="/cart"><ArrowLeft size={16}/> Back to cart</Link>
-        </div> : <div className="cart-items">{cart.map(i=><div className="cart-row" key={i.offer}>
-          <div><Link to={'/product/'+i.slug}><strong>{i.name}</strong></Link><small>{i.seller} · {money(i.cents)} each</small></div>
-          <label>Qty<input aria-label={i.name+' quantity'} type="number" min={1} max={20} value={i.quantity} onChange={e=>quantity(i.offer,e.target.valueAsNumber)}/></label>
-          <button className="text-button" onClick={()=>setCart(cart.filter(x=>x.offer!==i.offer))}>Remove</button>
-        </div>)}</div>}
-        <aside className="summary"><h2>Order summary</h2>
-          <ul className="receipt-lines">{cart.map(i=>{
-            const current=quote?.items.find(line=>line.offer===i.offer);
-            const unitPrice=checkout&&user?current?.cents:i.cents;
-            return <li key={i.offer}>
-              <div><strong>{current?.name??i.name}</strong><small>{current?.seller??i.seller} · Qty {i.quantity}</small>
-                {current && current.available<i.quantity && <small className="field-error">{current.available} available</small>}</div>
-              <strong>{unitPrice==null?'—':money(unitPrice*i.quantity)}</strong>
-            </li>;
-          })}</ul>
-          <div className="sum"><span>{checkout?'Total':'Estimated total'}</span><strong>{checkout && user ? payable===undefined?'—':money(payable):money(total)}</strong></div>
-          {checkout && user && <>
-            {pending && <p>A previous payment may still be pending. Retry with the same test card to check its outcome.</p>}
-            {quoteError && <><ErrorText message={quoteError}/><button className="button secondary" onClick={()=>refreshQuote(version=>version+1)}>Refresh total</button></>}
-            {!pending && !quoteError && !quote && <Loading/>}
-            {!pending && unavailable && <ErrorText message="Some offers are unavailable. Update your cart before paying."/>}
-          </>}
-          {!checkout && <Link className="button primary" to="/checkout">Continue to checkout<ArrowRight size={18}/></Link>}
-        </aside>
-      </div>}
+  const methods=checkout&&user ? <form id="payment-form" className="payment-flow" onSubmit={buy} noValidate autoComplete="off">
+    <fieldset disabled={busy}>
+      <legend>How would you like to pay?</legend>
+      <label className="payment-method">
+        <span className="payment-icon"><Wallet size={25}/></span>
+        <span><strong>Eneba Wallet</strong><small>Pay with your Eneba wallet balance.</small></span>
+        <input name="method" type="radio" checked={method==='wallet'} onChange={()=>selectMethod('wallet')}/>
+      </label>
+      <label className="payment-method">
+        <span className="payment-icon"><CreditCard size={25}/></span>
+        <span><strong>Credit or debit card</strong><small>Pay with Visa or Mastercard.</small></span>
+        <input name="method" type="radio" checked={method==='card'} onChange={()=>selectMethod('card')}/>
+      </label>
+      <div className="payment-panel">
+        <span className="test-mode"><ShieldCheck size={16}/>Test mode — no real charges</span>
+        {method==='wallet'&&<TestWallet key={user.email} email={user.email} amount={payable} switchToCard={()=>selectMethod('card')}/>}
+        {method==='card'&&<>
+          <details className="payment-help"><summary>Test payment details</summary>
+            <dl><dt>Successful payment</dt><dd><code>4242 4242 4242 4242</code></dd><dt>Declined payment</dt><dd><code>0000 0000 0000 0000</code></dd></dl>
+            <p>Use any test name, a future expiry date, and any three digits for CVC.</p>
+          </details>
+          <div className="card-inputs">
+            <label>Cardholder name<input {...fieldProps('name')} value={card.name} onChange={e=>update('name',e.target.value)} maxLength={80} placeholder="Cardholder name" required/>{fieldError('name')}</label>
+            <label>Card number<input {...fieldProps('number')} inputMode="numeric" value={card.number} onChange={e=>update('number',digits(e.target.value,16).match(/.{1,4}/g)?.join(' ')||'')} placeholder="0000 0000 0000 0000" required/>{fieldError('number')}</label>
+            <div className="card-fields">
+              <label>Expiry date<input {...fieldProps('expiry')} inputMode="numeric" value={card.expiry} onChange={e=>{const value=digits(e.target.value,4);update('expiry',value.length>2?value.slice(0,2)+'/'+value.slice(2):value);}} placeholder="MM/YY" required/>{fieldError('expiry')}</label>
+              <label>CVC<input {...fieldProps('cvc')} type="password" inputMode="numeric" value={card.cvc} onChange={e=>update('cvc',digits(e.target.value,3))} placeholder="•••" required/>{fieldError('cvc')}</label>
+            </div>
+          </div>
+        </>}
+        {error&&<ErrorText message={error}/>}
+      </div>
+    </fieldset>
+  </form>:null;
+
+  function lineItems(editable:boolean){
+    return <ul className="checkout-lines">{cart.map(item=>{
+      const current=quote?.items.find(line=>line.offer===item.offer);
+      return <li key={item.offer}>
+        <div className="checkout-thumbnail">{current?.artwork?<img src={current.artwork} alt=""/>:<Gift size={26}/>}</div>
+        <div className="checkout-item-info">
+          <small>Sold by <strong>{current?.seller??item.seller}</strong></small>
+          <Link to={'/product/'+item.slug}><strong>{current?.name??item.name}</strong></Link>
+          {current&&<small>{[current.platform,current.region].filter(Boolean).join(' · ')}</small>}
+          {current?.region && current.region!=='Global'&&<small className="checkout-restriction">Activation restricted to {current.region}.</small>}
+          {current && current.available<item.quantity&&<small className="field-error">{current.available} available</small>}
+        </div>
+        <div className="checkout-item-controls">
+          {editable?<div className="quantity-stepper">
+            <button aria-label={'Decrease quantity for '+item.name} disabled={item.quantity<=1} onClick={()=>quantity(item.offer,item.quantity-1)}>−</button>
+            <output>{item.quantity}</output>
+            <button aria-label={'Increase quantity for '+item.name} disabled={item.quantity>=Math.min(current?.available??20,20)} onClick={()=>quantity(item.offer,item.quantity+1)}>+</button>
+          </div>:<small>Qty {item.quantity}</small>}
+          <strong>{current?.cents==null?'—':money(current.cents*item.quantity)}</strong>
+          {editable&&<button aria-label={'Remove '+item.name} className="text-button" onClick={()=>quick?setQuickOrder(null):setCart(cart.filter(x=>x.offer!==item.offer))}><Trash2 size={16}/></button>}
+        </div>
+      </li>;
+    })}</ul>;
+  }
+
+  const summary=<aside className="checkout-sidebar">
+    {!checkout&&<form id="delivery-form" className="checkout-box" onSubmit={event=>{
+      event.preventDefault();
+      if(!quote||unavailable) return;
+      setDeliveryEmail(email);
+      navigate(user?paymentPath:signIn);
+    }}>
+      <h2>Where to deliver the order?</h2>
+      <label>Email<input type="email" required maxLength={254} autoComplete="email" value={email} onChange={event=>setDeliveryEmail(event.target.value)}/></label>
+      <p>Purchased keys are available in your account after payment.</p>
+    </form>}
+    <section className="checkout-box">
+      <h2>{checkout?'Order summary':'Summary'}</h2>
+      {checkout&&lineItems(false)}
+      {!checkout&&<button className="button primary" form="delivery-form" disabled={!quote||unavailable||user===undefined}>Proceed to checkout</button>}
+      <dl className="checkout-totals">
+        <div><dt>Subtotal</dt><dd>{quote?money(quote.cents-quote.serviceFeeCents+quote.discountCents):'—'}</dd></div>
+        <div><dt>Service fee</dt><dd>{quote?money(quote.serviceFeeCents):'—'}</dd></div>
+        {Boolean(quote?.discountCents)&&<div><dt>Discount</dt><dd>−{money(quote!.discountCents)}</dd></div>}
+        <div className="checkout-total"><dt>Total</dt><dd>{payable===undefined?'—':money(payable)}</dd></div>
+      </dl>
+      {checkout&&<div className="checkout-email"><span>Delivery email</span><strong>{email||'—'}</strong><Link to={cartPath}>Edit</Link></div>}
+      {checkout&&user&&<button form="payment-form" className="button primary pay-button" disabled={busy || !method || payable===undefined || (!pending&&unavailable)}>{busy?'Processing…':payable!==undefined?'Pay '+money(payable):'Pay'}<ArrowRight size={18}/></button>}
+      {pending&&checkout&&<p>A previous payment may still be pending. Retry with the same method and test details to check its outcome.</p>}
+      {quoteError&&<><ErrorText message={quoteError}/><button className="button secondary" onClick={()=>refreshQuote(version=>version+1)}>Refresh total</button></>}
+      {!pending&&!quoteError&&!quote&&<Loading/>}
+      {!pending&&unavailable&&<ErrorText message="Some offers are unavailable. Update your cart before paying."/>}
+    </section>
+  </aside>;
+
+  return <div className={'inner checkout-page '+(checkout?'payment-step':'cart-step')}>
+    {!cart.length?<Empty title="Your cart is empty"><Link className="button primary" to="/store">Browse games<ArrowRight size={18}/></Link></Empty>:
+      <>
+        <div className="checkout-grid">
+          <div className="checkout-main">
+            {!checkout?<section className="checkout-box"><h1>My cart</h1>{lineItems(true)}</section>:<>
+              {sessionError&&<ErrorText message={sessionError}/>}
+              {user===undefined?<Loading/>:user?methods:<section className="checkout-box"><h1>Sign in to continue</h1><Link className="button primary" to={signIn}>Sign in to checkout</Link></section>}
+              <Link className="back-link" to={cartPath}><ArrowLeft size={16}/> Back to cart</Link>
+            </>}
+          </div>
+          {summary}
+        </div>
+        {!checkout&&<div className="checkout-picks"><Recommendations key={cart[0].slug} slug={cart[0].slug} title="Inspired by your picks"/></div>}
+      </>}
   </div>;
 }
 
@@ -616,7 +905,7 @@ function OrderPage() {
   if (!data) return <Loading/>;
   return <div className="inner receipt">
     <Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
-    <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>Payment successful</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()}</p></div><strong>{money(data.cents)}</strong></div>
+    <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>Payment successful</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()} · {data.payment_method==='wallet'?'Eneba Wallet':'Credit or debit card'}</p></div><strong>{money(data.cents)}</strong></div>
     <h2 className="receipt-title">Receipt summary</h2>
     {data.items.map(i=><article className="key-card" key={i.id}>
       <div className="receipt-item">
@@ -642,8 +931,38 @@ function Protected({children}:{children:ReactNode}) {
   return children;
 }
 
+function CheckoutHeader({step,quick}:{step:number;quick:boolean}) {
+  const steps=['Cart','Payment','Get your product'];
+  return <header className="checkout-header"><div className="wrap">
+    <Brand/>
+    <ol className="checkout-progress" aria-label="Checkout progress">
+      {steps.map((label,index)=><li key={label} data-state={index+1<step?'done':index+1===step?'active':'upcoming'} aria-current={index+1===step?'step':undefined}>
+        <span aria-hidden="true">{index+1<step?<Check size={14}/>:index+1}</span>
+        {step===2&&index===0?<Link to={quick?'/cart?mode=buy-now':'/cart'}>{label}</Link>:<strong>{label}</strong>}
+      </li>)}
+    </ol>
+    <details className="locale-control"><summary aria-label="Language and currency"><Globe size={17}/><span>English | EUR</span></summary>
+      <div><strong>English · EUR</strong><p>Prices are quoted in euros.</p></div>
+    </details>
+  </div></header>;
+}
+
 function App() {
+  const [deliveryEmail,updateDeliveryEmail]=useState<string|null>(()=>sessionStorage.getItem('eneba.delivery-email'));
+  function setDeliveryEmail(email:string){
+    sessionStorage.setItem('eneba.delivery-email',email);
+    updateDeliveryEmail(email);
+  }
   const [cart,updateCart]=useState(()=>saved<Item[]>('keyshift.cart',[]));
+  const [quickOrder,updateQuickOrder]=useState<Item|null>(()=>{
+    try {return JSON.parse(sessionStorage.getItem('eneba.buy-now')??'null');}
+    catch {return null;}
+  });
+  function setQuickOrder(item:Item|null){
+    if(item) sessionStorage.setItem('eneba.buy-now',JSON.stringify(item));
+    else sessionStorage.removeItem('eneba.buy-now');
+    updateQuickOrder(item);
+  }
   const [wishlist,setWishlist]=useState(()=>saved<string[]>('eneba.wishlist',[]));
   function toggleWishlist(slug:string) {
     const next=wishlist.includes(slug)?wishlist.filter(item=>item!==slug):[...wishlist,slug];
@@ -656,7 +975,9 @@ function App() {
     setSession({user:next,error:''});
   }
   const [toast,setToast]=useState('');
-  const {pathname}=useLocation();
+  const {pathname,search}=useLocation();
+  const step=pathname==='/cart'?1:pathname==='/checkout'?2:/^\/orders\/[^/]+$/.test(pathname)?3:0;
+  const quick=new URLSearchParams(search).get('mode')==='buy-now';
   useEffect(() => {
     const request = new AbortController();
     function finish(next:typeof session) {
@@ -670,8 +991,8 @@ function App() {
   useEffect(()=>{window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
   function setCart(items:Item[]) {localStorage.setItem('keyshift.cart',JSON.stringify(items));updateCart(items);}
-  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist}}>
-    <Header/>
+  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail}}>
+    {step?<CheckoutHeader step={step} quick={quick}/>:<Header/>}
     <main className="wrap"><Routes>
       <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/store/:category" element={<Store/>}/><Route path="/wishlist" element={<Wishlist/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
       <Route path="/cart" element={<Cart key="cart"/>}/><Route path="/checkout" element={<Cart key="checkout" checkout/>}/><Route path="/login" element={<Auth key="login"/>}/><Route path="/register" element={<Auth key="register"/>}/>

@@ -46,11 +46,15 @@ Search normalizes whitespace and case and gives literal substrings precedence in
 
 ## Checkout and key delivery
 
-The browser keeps seller offer IDs and quantities through sign-in. At checkout, the Go API quotes current prices and stock. Use **4242 4242 4242 4242** for approval or **0000 0000 0000 0000** for a decline, along with a test name, a future expiry, and any three-digit CVC. The form sends only the scenario identifier and order information. Card data stays in the form and is never logged or saved by the app.
+Checkout progresses through Cart, Payment, and Get your product. The cart preserves seller offers and the edited delivery email through sign-in. The app records the delivery email with the order and makes keys available in the authenticated account. It does not send email. The Go API quotes current prices, stock, and the €0.00 service fee.
+
+Choose Credit or debit card and use **4242 4242 4242 4242** for approval or **0000 0000 0000 0000** for a decline. Enter a test name, a future expiry, and any three-digit CVC. The form sends a scenario identifier instead of card details. Eneba Wallet adds €25.00 in test funds per funding request. Its account balance and ledger are stored in PostgreSQL. Funding retries cannot add the same credit twice, and a wallet debit commits with the order and keys in one transaction.
 
 The server authenticates the buyer using an expiring, HttpOnly, SameSite cookie. Checkout locks selected offers in a consistent order, verifies the quoted total and stock, and assigns one key per unit in a single transaction. A decline, changed price, or insufficient stock leaves the basket available for review. The browser reuses an unresolved checkout ID when retrying the same scenario. PostgreSQL enforces uniqueness per account and the API returns the existing order on matching retries.
 
 Receipts show the purchased items and hide keys until the buyer reveals them. The server checks order ownership on every request. New order lines snapshot product details, and older receipts resolve these details through their original offers without changing issued keys.
+
+Product pages show the least-expensive in-stock offer first, same-category recommendations, activation instructions, and persisted product reviews. Signed-in users can submit or update one review per product.
 
 ## Validation
 

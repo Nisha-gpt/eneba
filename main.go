@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -238,6 +239,78 @@ func (a app) product(w http.ResponseWriter, r *http.Request) error {
  FROM products p WHERE slug=$1`, r.PathValue("slug")))
 }
 
+func (a app) recommendations(w http.ResponseWriter, r *http.Request) error {
+	page, err := number(r.URL.Query().Get("page"), 1, 1, 1000)
+	if err != nil {
+		return err
+	}
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ WITH current AS (SELECT id,platform FROM products WHERE slug=$1),
+ ranked AS (
+  SELECT p.*, row_number() OVER (ORDER BY
+   CASE WHEN EXISTS (
+    SELECT 1 FROM product_categories src JOIN product_categories dst USING(category)
+    WHERE src.product_id=c.id AND dst.product_id=p.id
+   ) THEN 0 ELSE 1 END,
+   CASE WHEN p.platform=c.platform THEN 0 ELSE 1 END,p.name,p.id) AS rank
+  FROM (`+catalog+`) p CROSS JOIN current c WHERE p.id<>c.id AND p.cents IS NOT NULL
+ ), page AS (
+  SELECT * FROM ranked ORDER BY rank LIMIT 5 OFFSET $2
+ )
+ SELECT jsonb_build_object('items',COALESCE((SELECT jsonb_agg(to_jsonb(page)-'rank' ORDER BY rank) FROM page),'[]'),
+ 'hasMore',(SELECT count(*) FROM ranked)>$2::int+5)
+ WHERE EXISTS(SELECT 1 FROM current)
+ `, r.PathValue("slug"), (page-1)*5))
+}
+
+func (a app) reviews(w http.ResponseWriter, r *http.Request) error {
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT jsonb_build_object(
+  'count',(SELECT count(*) FROM product_reviews WHERE product_id=p.id),
+  'average',(SELECT round(avg(rating),1) FROM product_reviews WHERE product_id=p.id),
+  'items',COALESCE((
+   SELECT jsonb_agg(to_jsonb(recent) ORDER BY updated_at DESC,id)
+   FROM (
+    SELECT row_number() OVER (ORDER BY updated_at DESC,account_id) AS id,rating,body,updated_at
+    FROM product_reviews WHERE product_id=p.id ORDER BY updated_at DESC,account_id LIMIT 10
+   ) recent
+  ),'[]'))
+ FROM products p WHERE p.slug=$1
+ `, r.PathValue("slug")))
+}
+
+func (a app) saveReview(w http.ResponseWriter, r *http.Request) error {
+	id, _, err := a.account(r)
+	if err != nil {
+		return err
+	}
+	var review struct {
+		Rating int    `json:"rating"`
+		Body   string `json:"body"`
+	}
+	if err := read(w, r, &review); err != nil {
+		return err
+	}
+	review.Body = strings.TrimSpace(review.Body)
+	length := utf8.RuneCountInString(review.Body)
+	if review.Rating < 1 || review.Rating > 5 || length < 10 || length > 1000 || strings.ContainsRune(review.Body, 0) {
+		return fail(400, "Choose a rating from 1 to 5 and write 10–1000 characters.")
+	}
+	result, err := a.db.Exec(r.Context(), `
+ INSERT INTO product_reviews(product_id,account_id,rating,body)
+ SELECT id,$2,$3,$4 FROM products WHERE slug=$1
+ ON CONFLICT (product_id,account_id) DO UPDATE
+ SET rating=EXCLUDED.rating,body=EXCLUDED.body,updated_at=now()
+ `, r.PathValue("slug"), id, review.Rating, review.Body)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fail(404, "This item could not be found.")
+	}
+	return a.reviews(w, r)
+}
+
 func (a app) home(section string) endpoint {
 	return func(w http.ResponseWriter, r *http.Request) error {
 		return queryJSON(w, a.db.QueryRow(r.Context(), `
@@ -345,6 +418,7 @@ type checkoutRequest struct {
 	RequestID     string `json:"requestId"`
 	Payment       string `json:"payment"`
 	ExpectedCents *int   `json:"expectedCents,omitempty"`
+	DeliveryEmail string `json:"deliveryEmail,omitempty"`
 }
 
 var requestPattern = regexp.MustCompile(`^[A-Za-z0-9-]{16,80}$`)
@@ -352,7 +426,7 @@ var requestPattern = regexp.MustCompile(`^[A-Za-z0-9-]{16,80}$`)
 // testPayment is internal to checkout. Its inputs never include card details.
 func testPayment(scenario string) error {
 	switch scenario {
-	case "test_card_approved":
+	case "test_card_approved", "test_wallet":
 		return nil
 	case "test_card_declined":
 		return fail(402, "Test payment declined. Check the test payment details and try again.")
@@ -375,9 +449,6 @@ func validateLines(items []line) error {
 }
 
 func (a app) quote(w http.ResponseWriter, r *http.Request) error {
-	if _, _, err := a.account(r); err != nil {
-		return err
-	}
 	var req struct {
 		Items []line `json:"items"`
 	}
@@ -393,9 +464,9 @@ func (a app) quote(w http.ResponseWriter, r *http.Request) error {
 	}
 	return queryJSON(w, a.db.QueryRow(r.Context(), `
       SELECT jsonb_build_object(
-        'cents',COALESCE(sum(o.cents * i.quantity), 0),
+        'cents',COALESCE(sum(o.cents * i.quantity), 0), 'serviceFeeCents',0,'discountCents',0,
         'items',jsonb_agg(jsonb_build_object('offer',i.offer,'quantity',i.quantity,
-          'name',p.name,'seller',s.name,'cents',o.cents,
+          'name',p.name,'seller',s.name,'cents',o.cents,'artwork',p.artwork,'platform',p.platform,'region',p.region,
           'available',COALESCE(stock.count, 0)) ORDER BY i.offer))
       FROM jsonb_to_recordset($1::jsonb) AS i(offer bigint, quantity integer)
       LEFT JOIN offers o ON o.id=i.offer
@@ -407,7 +478,7 @@ func (a app) quote(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
-	account, _, err := a.account(r)
+	account, email, err := a.account(r)
 	if err != nil {
 		return err
 	}
@@ -418,12 +489,19 @@ func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
 	if !requestPattern.MatchString(req.RequestID) || req.ExpectedCents == nil || *req.ExpectedCents < 1 {
 		return fail(400, "Invalid checkout request.")
 	}
+	req.DeliveryEmail = strings.TrimSpace(req.DeliveryEmail)
+	if req.DeliveryEmail != "" && (len(req.DeliveryEmail) > 254 || !emailPattern.MatchString(req.DeliveryEmail) || strings.ContainsRune(req.DeliveryEmail, 0)) {
+		return fail(400, "Enter a valid delivery email.")
+	}
 	if err := validateLines(req.Items); err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(req)
 	hash := sha256.Sum256(payload)
 	fingerprint := hex.EncodeToString(hash[:])
+	if req.DeliveryEmail == "" {
+		req.DeliveryEmail = email
+	}
 	var order int64
 	for attempt := 0; attempt < 3; attempt++ {
 		order, err = a.purchase(r.Context(), account, req, fingerprint)
@@ -496,7 +574,21 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 	if total != *req.ExpectedCents {
 		return 0, fail(409, "The total changed. Review the updated order summary before paying.")
 	}
-	if _, err = tx.Exec(ctx, `UPDATE orders SET cents=$1 WHERE id=$2`, total, order); err != nil {
+	method := "card"
+	if req.Payment == "test_wallet" {
+		method = "wallet"
+		deduction, err := tx.Exec(ctx, `UPDATE wallets SET cents=cents-$2 WHERE account_id=$1 AND cents >= $2`, account, total)
+		if err != nil {
+			return 0, err
+		}
+		if deduction.RowsAffected() == 0 {
+			return 0, fail(402, "Insufficient test wallet balance. Add test funds or pay by card.")
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO wallet_transactions(account_id,order_id,cents) VALUES($1,$2,$3)`, account, order, -total); err != nil {
+			return 0, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE orders SET cents=$1, payment_method=$3, delivery_email=$4 WHERE id=$2`, total, order, method, req.DeliveryEmail); err != nil {
 		return 0, err
 	}
 	return order, tx.Commit(ctx)
@@ -513,7 +605,7 @@ func (a app) orders(w http.ResponseWriter, r *http.Request) error {
 			return fail(404, "Order not found.")
 		}
 		return queryJSON(w, a.db.QueryRow(r.Context(), `
-  SELECT jsonb_build_object('id',o.id,'cents',o.cents,'created_at',o.created_at,'items',(
+  SELECT jsonb_build_object('id',o.id,'cents',o.cents,'created_at',o.created_at,'payment_method',o.payment_method,'delivery_email',o.delivery_email,'items',(
    SELECT jsonb_agg(jsonb_build_object('id',l.id,'product',l.product_name,'seller',l.seller_name,'cents',l.cents,
     'quantity',l.quantity,'keys',COALESCE((SELECT jsonb_agg(i.code ORDER BY i.id) FROM inventory i WHERE i.line_id=l.id),'[]'))
     || COALESCE(l.product_details,jsonb_build_object('artwork',p.artwork,'platform',p.platform,'region',p.region,'activation',p.activation)) ORDER BY l.id)
@@ -523,6 +615,64 @@ func (a app) orders(w http.ResponseWriter, r *http.Request) error {
 	return queryJSON(w, a.db.QueryRow(r.Context(), `
  SELECT COALESCE(jsonb_agg(jsonb_build_object('id',id,'cents',cents,'created_at',created_at) ORDER BY id DESC),'[]')
  FROM orders WHERE account_id=$1`, id))
+}
+
+func (a app) wallet(w http.ResponseWriter, r *http.Request) error {
+	id, _, err := a.account(r)
+	if err != nil {
+		return err
+	}
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT jsonb_build_object('cents',COALESCE((SELECT cents FROM wallets WHERE account_id=$1),0),
+ 'topUpCents',2500)
+ `, id))
+}
+
+func (a app) fundWallet(w http.ResponseWriter, r *http.Request) error {
+	id, _, err := a.account(r)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := read(w, r, &req); err != nil {
+		return err
+	}
+	if !requestPattern.MatchString(req.RequestID) {
+		return fail(400, "Invalid funding request.")
+	}
+	ctx := r.Context()
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `INSERT INTO wallets(account_id) VALUES($1) ON CONFLICT DO NOTHING`, id); err != nil {
+		return err
+	}
+	var balance int
+	if err = tx.QueryRow(ctx, `SELECT cents FROM wallets WHERE account_id=$1 FOR UPDATE`, id).Scan(&balance); err != nil {
+		return err
+	}
+	record, err := tx.Exec(ctx, `INSERT INTO wallet_transactions(account_id,request_id,cents)
+ VALUES($1,$2,2500) ON CONFLICT (account_id,request_id) DO NOTHING`, id, req.RequestID)
+	if err != nil {
+		return err
+	}
+	if record.RowsAffected() > 0 {
+		if balance > 97500 {
+			return fail(409, "Your test wallet has reached its balance limit.")
+		}
+		balance += 2500
+		if _, err = tx.Exec(ctx, `UPDATE wallets SET cents=$2 WHERE account_id=$1`, id, balance); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	return write(w, 200, map[string]int{"cents": balance, "topUpCents": 2500})
 }
 
 func (a app) routes(static string) http.Handler {
@@ -541,6 +691,9 @@ func (a app) routes(static string) http.Handler {
 	mux.HandleFunc("GET /api/navigation", handler(a.navigation))
 	mux.HandleFunc("GET /api/products", handler(a.store))
 	mux.HandleFunc("GET /api/products/{slug}", handler(a.product))
+	mux.HandleFunc("GET /api/products/{slug}/recommendations", handler(a.recommendations))
+	mux.HandleFunc("GET /api/products/{slug}/reviews", handler(a.reviews))
+	mux.HandleFunc("POST /api/products/{slug}/reviews", handler(a.saveReview))
 	mux.HandleFunc("GET /api/filters", handler(func(w http.ResponseWriter, r *http.Request) error {
 		return queryJSON(w, a.db.QueryRow(r.Context(), `SELECT jsonb_build_object('platforms',array_agg(DISTINCT platform ORDER BY platform),'regions',array_agg(DISTINCT region ORDER BY region)) FROM products`))
 	}))
@@ -572,6 +725,8 @@ func (a app) routes(static string) http.Handler {
 		return write(w, 200, nil)
 	}))
 	mux.HandleFunc("POST /api/checkout/quote", handler(a.quote))
+	mux.HandleFunc("GET /api/wallet", handler(a.wallet))
+	mux.HandleFunc("POST /api/wallet/fund", handler(a.fundWallet))
 	mux.HandleFunc("POST /api/checkout", handler(a.checkout))
 	mux.HandleFunc("GET /api/orders", handler(a.orders))
 	mux.HandleFunc("GET /api/orders/{id}", handler(a.orders))
@@ -582,6 +737,8 @@ func (a app) routes(static string) http.Handler {
 	mux.HandleFunc("/api/", unknownAPI)
 	mux.Handle("GET /assets/", http.FileServer(http.Dir(static)))
 	mux.Handle("GET /art/", http.FileServer(http.Dir(static)))
+	mux.Handle("GET /favicon.svg", http.FileServer(http.Dir(static)))
+	mux.Handle("GET /apple-touch-icon.png", http.FileServer(http.Dir(static)))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
