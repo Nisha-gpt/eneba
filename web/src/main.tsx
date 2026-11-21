@@ -1,13 +1,13 @@
 import { useEffect, useState, useRef, createContext, useContext } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Gamepad2 as ConsoleIcon } from 'lucide-react';
+import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
 import '@fontsource-variable/space-grotesk';
 import './style.css';
 
-type Product = {id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; cents:number|null};
+type Product = {id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; attributes:Record<string,string>; cents:number|null};
 type Offer = {id:number; seller:string; cents:number; stock:number};
 type Item = {offer:number; quantity:number; name:string; seller:string; cents:number; slug:string};
 type User = {email:string};
@@ -37,7 +37,7 @@ async function api<T>(path:string, body?:unknown, signal?:AbortSignal):Promise<T
   return data as T;
 }
 
-function useData<T>(path:string): {data?:T; error?:string} {
+function useData<T>(path:string): {data?:T; error?:string; previous?:T} {
   const [result,setResult] = useState<{path:string; data?:T; error?:string}>({path:''});
   useEffect(() => {
     const controller = new AbortController();
@@ -46,7 +46,7 @@ function useData<T>(path:string): {data?:T; error?:string} {
     });
     return () => controller.abort();
   },[path]);
-  return result.path === path ? result : {};
+  return result.path === path ? result : {previous:result.data};
 }
 
 function saved<T>(key:string, fallback:T):T {
@@ -54,7 +54,7 @@ function saved<T>(key:string, fallback:T):T {
   catch { return fallback; }
 }
 
-type Market = {cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
+type Market = {wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
 const MarketContext = createContext<Market>(null!);
 const useMarket = () => useContext(MarketContext);
 const ErrorText = ({message}:{message:string}) => <p className="feedback error" role="alert">{message}</p>;
@@ -72,22 +72,77 @@ function Brand() {
   </Link>;
 }
 
+type Category = {slug:string; parent:string|null; name:string; heading:string; rank:number; nav_rank:number|null};
+const categoryPath = (slug:string) => '/store/'+slug;
+
+function Drawer({title,children,onClose,leading,heading}:{title:string;children:ReactNode;onClose:()=>void;leading?:ReactNode;heading?:ReactNode}) {
+  const ref=useRef<HTMLDialogElement>(null);
+  useEffect(()=>{
+    const dialog=ref.current!;
+    const trigger=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    const previous=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    dialog.showModal();
+    return ()=>{
+      dialog.close();
+      document.body.style.overflow=previous;
+      trigger?.focus();
+    };
+  },[]);
+  return <dialog ref={ref} className="side-drawer" aria-label={title}
+    onCancel={e=>{e.preventDefault();onClose();}}
+    onClick={e=>{if(e.target===e.currentTarget) onClose();}}>
+    <div className="drawer-content">
+      <div className="drawer-header"><div>{leading}{heading??<strong>{title}</strong>}</div><button aria-label="Close drawer" onClick={onClose}><X size={21}/></button></div>
+      {children}
+    </div>
+  </dialog>;
+}
+
+function CategoryDrawer({categories,onClose,error}:{categories:Category[];onClose:()=>void;error?:string}) {
+  const [parent,setParent]=useState<Category|null>(null);
+  const back=useRef<HTMLButtonElement>(null);
+  const lastCategory=useRef<HTMLButtonElement|null>(null);
+  useEffect(()=>{
+    if(parent) back.current?.focus();
+    else if(lastCategory.current) document.getElementById(lastCategory.current.id)?.focus();
+  },[parent]);
+  return <Drawer title={parent?.name??'Categories'} onClose={onClose}
+    heading={!parent?<span className="brand" aria-hidden="true"><span className="eneba-mark"><i/><i/><i/></span><span>eneba</span></span>:undefined}
+    leading={parent&&<button aria-label="Back to categories" ref={back} onClick={()=>setParent(null)}><ChevronLeft size={18}/></button>}>
+    <nav className="drawer-links" aria-label={parent?.name??'Categories'}>
+      <Link to={parent?categoryPath(parent.slug):'/store'} onClick={onClose}>All offers</Link>
+      {error && <ErrorText message={error}/>}
+      {!error && !categories.length && <Loading/>}
+      {categories.filter(c=>c.parent===(parent?.slug??null) && c.slug!=='cheap-games').map(c=>
+        categories.some(child=>child.parent===c.slug)
+        ? <button id={'drawer-category-'+c.slug} key={c.slug} onClick={e=>{lastCategory.current=e.currentTarget;setParent(c);}}>{c.name}<ChevronRight size={17}/></button>
+        : <Link key={c.slug} to={categoryPath(c.slug)} onClick={onClose}>{c.name}</Link>)}
+    </nav>
+  </Drawer>;
+}
+
 const marketplaceLinks = [
-  {name:'Games',path:'/store',icon:Gamepad2},
-  {name:'Cheap Games',path:'/store?sort=price-asc',icon:Gamepad2},
-  {name:'Steam',path:'/store?platform=Steam',icon:Monitor},
-  {name:'PlayStation',path:'/store?platform=PlayStation',icon:Gamepad},
-  {name:'Xbox',path:'/store?platform=Xbox',icon:ConsoleIcon},
-  {name:'Nintendo',path:'/store?platform=Nintendo',icon:Joystick},
+  {name:'Games',path:'/store/games',icon:Gamepad2},
+  {name:'Gaming eCards',path:'/store/gaming-ecards',icon:Gamepad},
+  {name:'eGift Cards',path:'/store/e-gift-cards',icon:Gift},
+  {name:'Steam',path:'/store/steam',icon:Monitor},
+  {name:'PSN',path:'/store/psn',icon:Gamepad},
+  {name:'Xbox',path:'/store/xbox',icon:Gamepad2},
+  {name:'Nintendo',path:'/store/nintendo',icon:Joystick},
 ];
 
 function Header() {
-  const {cart,user} = useMarket();
+  const {cart,user,wishlist} = useMarket();
   const navigate = useNavigate();
   const {pathname,search} = useLocation();
-  const query = pathname === '/store' ? new URLSearchParams(search).get('q') ?? '' : '';
+  const query = pathname.startsWith('/store') ? new URLSearchParams(search).get('q') ?? '' : '';
   const [value,setValue] = useState(query);
+  const [drawer,setDrawer]=useState(false);
+  const navigation=useData<Category[]>('/navigation');
+  const links=(navigation.data??[]).filter(c=>c.nav_rank!==null).sort((a,b)=>a.nav_rank!-b.nav_rank!);
   useEffect(() => setValue(query),[query,pathname]);
+  useEffect(()=>setDrawer(false),[pathname,search]);
   function submit(e:FormEvent) {
     e.preventDefault();
     const params = new URLSearchParams();
@@ -98,29 +153,67 @@ function Header() {
     <div className="wrap nav">
       <Brand/>
       <form className="search" onSubmit={submit} role="search">
-        <Search size={19}/><input aria-label="Search games" placeholder="Search games, platforms and more" value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
+        <Search size={22}/><input aria-label="Search games" placeholder="Search for games, top-ups and more" value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
         <button aria-label="Submit search"><ArrowRight size={17}/></button>
       </form>
       <div className="utilities">
-        <Link to={user ? '/orders' : '/login'} aria-label={user ? 'Your orders' : 'Sign in'}><CircleUserRound size={22}/><span>{user ? 'Orders' : 'Sign in'}</span></Link>
-        <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingCart size={20}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
+        <details className="locale-control"><summary aria-label="Language and currency"><Globe size={18}/><span>English | EUR</span></summary>
+          <div><strong>English · EUR</strong><p>The storefront is available in English. Purchases are quoted in EUR.</p></div>
+        </details>
+        <Link className="icon-link" to="/wishlist" aria-label={`Wishlist, ${wishlist.length} items`}><Heart size={22}/>{wishlist.length>0&&<b>{wishlist.length}</b>}</Link>
+        <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingCart size={22}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
+        <Link to={user ? '/orders' : '/login'} aria-label={user ? 'Your orders' : 'Sign in'}><CircleUserRound size={22}/><span>{user ? 'Orders' : 'Log in'}</span></Link>
+        {!user&&<Link className="register-nav" to="/register">Register</Link>}
       </div>
     </div>
-    <div className="market-nav"><nav className="wrap" aria-label="Marketplace">{marketplaceLinks.map(link=><Link key={link.path} to={link.path}>{link.name}</Link>)}</nav></div>
+    <div className="market-nav"><nav className="wrap" aria-label="Marketplace">
+      <button onClick={()=>setDrawer(true)} aria-haspopup="dialog" aria-expanded={drawer}><Menu size={20}/> Categories</button>
+      {links.map(c=><NavLink key={c.slug} to={categoryPath(c.slug)}>{c.name}</NavLink>)}
+      {navigation.data?.some(c=>c.slug==='gift-guide')&&<NavLink to="/store/gift-guide">Gift Guide</NavLink>}
+    </nav></div>
+    {drawer&&<CategoryDrawer categories={navigation.data??[]} error={navigation.error} onClose={()=>setDrawer(false)}/>}
   </header>;
 }
 
+function ProductArtwork({product}:{product:Product}) {
+  if(product.artwork) return <img src={product.artwork} alt="" loading="lazy" onError={e=>e.currentTarget.hidden=true}/>;
+  return <div className={'catalog-art art-'+(product.attributes.tone??'violet')} aria-hidden="true">
+    <div>{product.attributes.type==='Software'?<Monitor size={40}/>:<Gift size={40}/>}<strong>{product.attributes.brand??product.platform}</strong>
+      <span>{product.attributes.denomination ? product.attributes.denomination+' '+product.attributes.currency : product.attributes.type}</span></div>
+  </div>;
+}
+
 function Card({product}:{product:Product}) {
-  return <Link className="card" to={'/product/'+product.slug}>
-    <div className={'poster tone-'+product.id%6}>
-      <span className="poster-fallback" aria-hidden="true">{product.name}</span>
-      <img src={product.artwork} alt="" loading="lazy" onError={e=>e.currentTarget.hidden=true}/>
-      <span className="tag">{product.platform}</span>
-    </div>
-    <div className="card-body"><h3>{product.name}</h3><div className="eyebrow region" data-global={product.region==='Global'}>{product.region}</div>
-      <div className="card-bottom"><div>{product.cents === null ? <span>Out of stock</span> : <><small>From</small><strong>{money(product.cents)}</strong></>}</div><span className="card-arrow"><ArrowUpRight size={17}/></span></div>
-    </div>
-  </Link>;
+  const {wishlist,toggleWishlist}=useMarket();
+  const saved=wishlist.includes(product.slug);
+  return <article className="card-shell">
+    <Link className="card" to={'/product/'+product.slug}>
+      <div className={'poster tone-'+product.id%6}>
+        <span className="poster-fallback" aria-hidden="true">{product.name}</span>
+        <ProductArtwork product={product}/>
+        <span className="tag">{product.platform}</span>
+      </div>
+      <div className="card-body"><h3>{product.name}</h3><div className="eyebrow region" data-global={product.region==='Global'}>{product.region}</div>
+        <div className="card-bottom"><div>{product.cents === null ? <span>Out of stock</span> : <><small>From</small><strong>{money(product.cents)}</strong></>}</div></div>
+      </div>
+    </Link>
+    <button className="wishlist-toggle" aria-label={`${saved?'Remove':'Save'} ${product.name} ${saved?'from':'to'} wishlist`} aria-pressed={saved} onClick={()=>toggleWishlist(product.slug)}><Heart size={18} fill={saved?'currentColor':'none'}/></button>
+  </article>;
+}
+
+function SavedProduct({slug}:{slug:string}) {
+  const {data,error}=useData<Product & {offers:Offer[]}>('/products/'+encodeURIComponent(slug));
+  if(error) return <ErrorText message={error}/>;
+  if(!data) return <Loading/>;
+  const available=data.offers.find(offer=>offer.stock>0);
+  return <Card product={{...data,cents:available?.cents??null}}/>;
+}
+
+function Wishlist() {
+  const {wishlist}=useMarket();
+  return <div className="inner"><h1>Wishlist</h1>{wishlist.length
+    ? <div className="grid">{wishlist.map(slug=><SavedProduct key={slug} slug={slug}/>)}</div>
+    : <Empty title="Your wishlist is empty"><Link className="button primary" to="/store">Browse all offers</Link></Empty>}</div>;
 }
 
 function Collection({path}:{path:string}) {
@@ -154,33 +247,110 @@ function Home() {
   </>;
 }
 
+const filterNames:Record<string,string> = {
+  country:'Country',type:'Type',os:'Operating system',platform:'Platforms',
+  brand:'Brand',region:'Region',currency:'Currency',denomination:'Denomination',
+};
+type FacetOption={value:string;count:number};
+type Listing={items:Product[];total:number;pageSize:number;category:Category|null;facets:Record<string,FacetOption[]>};
+
+function Facet({name,options,selected,change}:{name:string;options:FacetOption[];selected:string[];change:(value:string)=>void}) {
+  const [search,setSearch]=useState('');
+  const values = [...options,...selected.filter(value=>!options.some(option=>option.value===value)).map(value=>({value,count:0}))];
+  return <details className="facet" open>
+    <summary>{name}{selected.length>0&&<span>{selected.length}</span>}</summary>
+    {(values.length>5||search)&&<input type="search" aria-label={'Search '+name.toLowerCase()} placeholder={'Search '+name.toLowerCase()} value={search}
+      onChange={event=>setSearch(event.target.value)}/>}
+    <div className="facet-options">{values.filter(option=>option.value.toLowerCase().includes(search.toLowerCase())).map(option=>
+      <label key={option.value}><input type="checkbox" checked={selected.includes(option.value)}
+        onChange={()=>change(option.value)}/><span>{option.value}</span><small aria-label={option.count+' products'}>{option.count}</small></label>)}</div>
+  </details>;
+}
+
+function PriceRange({min,max,onApply}:{min:string;max:string;onApply:(min:string,max:string)=>void}) {
+  const [error,setError]=useState('');
+  function apply(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    const data=new FormData(event.currentTarget);
+    const limits=['min','max'].map(key=>String(data.get(key)??'').trim());
+    if(limits.some(value=>value&&!/^\d{1,5}(?:\.\d{1,2})?$/.test(value.replace(',','.')))){
+      setError('Enter a price with up to two decimals.');
+      return;
+    }
+    const [low,high]=limits.map(value=>value?String(Math.round(Number(value.replace(',','.'))*100)):'');
+    if((high&&Number(low)>Number(high))||limits.some(value=>Number(value.replace(',','.'))>10000)){
+      setError('Enter a valid range up to €10,000.');
+      return;
+    }
+    onApply(low,high);
+  }
+  return <details className="facet price-range" open>
+    <summary>Price range (EUR)</summary>
+    <form onSubmit={apply}>
+      <div><input name="min" inputMode="decimal" aria-label="Minimum price" placeholder="Min" defaultValue={min?Number(min)/100:''}/>
+      <span>–</span><input name="max" inputMode="decimal" aria-label="Maximum price" placeholder="Max" defaultValue={max?Number(max)/100:''}/></div>
+      {error&&<ErrorText message={error}/>}
+      <button className="button secondary">Apply price</button>
+    </form>
+  </details>;
+}
+
 function Store() {
+  const {category}=useParams();
   const [params,setParams] = useSearchParams();
-  const {data,error} = useData<{items:Product[]; total:number; pageSize:number}>('/products?'+params);
-  const filters = useData<{platforms:string[];regions:string[]}>('/filters');
+  const [filterDrawer,setFilterDrawer]=useState(false);
+  const request=new URLSearchParams(params);
+  if(category) request.set('category',category);
+  else request.delete('category');
+  const {data,error,previous} = useData<Listing>('/products?'+request);
+  const facets = data?.facets ?? (previous?.category?.slug===category ? previous?.facets : undefined);
   const page = Number(params.get('page') || '1');
   const query = params.get('q') || '';
-  const update = (key:string,value:string) => {
+  const min=params.get('min')??'';
+  const max=params.get('max')??'';
+  const chips=[...params].filter(([key])=>key in filterNames||key==='min'||key==='max');
+  function update(key:string,value:string) {
     const next = new URLSearchParams(params);
     if (value) next.set(key,value); else next.delete(key);
     if (key !== 'page') next.delete('page');
     setParams(next);
-  };
-  return <div className="inner">
-    <Breadcrumb>Store</Breadcrumb><div className="eyebrow section-kicker">THE MARKETPLACE</div>
-    <h1>{query ? `Results for “${query}”` : 'Explore the store'}</h1>
+  }
+  function toggle(key:string,value:string){
+    const next=new URLSearchParams(params);
+    if(next.getAll(key).includes(value)) next.delete(key,value);
+    else next.append(key,value);
+    next.delete('page');setParams(next);
+  }
+  function clear(){
+    const next=new URLSearchParams(params);
+    for(const [key] of chips) next.delete(key);
+    next.delete('page');setParams(next);
+  }
+  const filters=<>
+    <PriceRange key={min+':'+max} min={min} max={max} onApply={(low,high)=>{
+      const next=new URLSearchParams(params);
+      if(low) next.set('min',low);else next.delete('min');
+      if(high) next.set('max',high);else next.delete('max');
+      next.delete('page');setParams(next);
+    }}/>
+    {Object.entries(filterNames).filter(([key])=>facets?.[key]?.length||params.has(key)).map(([key,label])=>
+      <Facet key={(category??'')+key} name={label} options={facets?.[key]??[]} selected={params.getAll(key)} change={value=>toggle(key,value)}/>)}
+  </>;
+  return <div className="inner catalog-page">
+    <h1>{query ? `Results for “${query}”` : data?.category?.heading ?? (category?'Browse category':'All offers')}</h1>
     <div className="store-layout">
-      <aside className="filters"><h2><SlidersHorizontal size={18}/> Filters</h2>
-        {filters.error && <ErrorText message={filters.error}/>}
-        <label>Platform<select aria-label="Platform" value={params.get('platform')||''} onChange={e=>update('platform',e.target.value)}><option value="">All platforms</option>{filters.data?.platforms.map(v=><option key={v}>{v}</option>)}</select></label>
-        <label>Region<select aria-label="Region" value={params.get('region')||''} onChange={e=>update('region',e.target.value)}><option value="">All regions</option>{filters.data?.regions.map(v=><option key={v}>{v}</option>)}</select></label>
-        <label>Maximum price<select aria-label="Maximum price" value={params.get('max')||''} onChange={e=>update('max',e.target.value)}><option value="">Any price</option>{[500,1000,2000,3000,5000].map(v=><option key={v} value={v}>{money(v)}</option>)}</select></label>
-        <button className="button secondary" onClick={()=>setParams(query ? {q:query} : {})}>Clear filters</button>
-      </aside>
+      <aside className="filters catalog-filters" aria-label="Product filters">{filters}</aside>
+      {filterDrawer&&<Drawer title="Filters" onClose={()=>setFilterDrawer(false)}><div className="catalog-filters">{filters}</div><button className="button primary show-results" onClick={()=>setFilterDrawer(false)}>Show results</button></Drawer>}
       <div className="results">
-        <div className="result-head"><span>{data ? `${data.total} ${data.total===1?'product':'products'}` : 'Products'}</span>
-          <label>Sort by <select aria-label="Sort by" value={params.get('sort')||''} onChange={e=>update('sort',e.target.value)}><option value="">Relevance</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option><option value="name-asc">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></label></div>
-        {error ? <ErrorText message={error}/> : !data ? <Loading/> : data.items.length ? <div className="grid store-grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products found"><p>Try a different search or clear the filters.</p><button className="button secondary" onClick={()=>setParams({})}>Show all games</button></Empty>}
+        <div className="filter-chips">
+          <button className="button secondary mobile-filter" onClick={()=>setFilterDrawer(true)}><SlidersHorizontal size={16}/> Filters</button>
+          {chips.map(([key,value])=><button key={key+':'+value} className="filter-chip" onClick={()=>key in filterNames?toggle(key,value):update(key,'')}>
+            {key==='min'?'Min '+money(Number(value)):key==='max'?'Max '+money(Number(value)):value}<X size={14}/></button>)}
+          {chips.length>0&&<button className="clear-filters" onClick={clear}>Clear all</button>}
+        </div>
+        <div className="result-head"><span>Results found: <strong>{data?.total??'—'}</strong></span>
+          <label><span>Sort by</span> <select aria-label="Sort by" value={params.get('sort')||''} onChange={e=>update('sort',e.target.value)}><option value="">Relevance</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option><option value="name-asc">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></label></div>
+        {error ? <ErrorText message={error}/> : !data ? <Loading/> : data.items.length ? <div className="grid store-grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products found"><p>Try a different search or clear your filters.</p><Link className="button secondary" to={category?categoryPath(category):'/store'}>Browse all in this category</Link></Empty>}
         {data && (data.total>data.pageSize || page>1) && <div className="pagination"><button className="button secondary" disabled={page<=1} onClick={()=>update('page',String(page-1))}>Previous</button><span>Page {page} of {Math.max(1,Math.ceil(data.total/data.pageSize))}</span><button className="button secondary" disabled={page*data.pageSize>=data.total} onClick={()=>update('page',String(page+1))}>Next</button></div>}
       </div>
     </div>
@@ -202,10 +372,13 @@ function ProductPage() {
   if (!data) return <Loading/>;
   return <div className="inner"><Breadcrumb><Link to="/store">Store</Link><span>/</span>{data.name}</Breadcrumb>
     <div className="product-layout">
-      <div className={'poster detail-art tone-'+data.id%6}><span className="poster-fallback">{data.name}</span><img src={data.artwork} alt="" onError={e=>e.currentTarget.hidden=true}/></div>
+      <div className={'poster detail-art tone-'+data.id%6}><span className="poster-fallback">{data.name}</span><ProductArtwork product={data}/></div>
       <div><div className="eyebrow section-kicker">{data.genre}</div><h1>{data.name}</h1>
         <div className="pills"><span><Gamepad2 size={17}/>{data.platform}</span><span>{data.region}</span><span><KeyRound size={16}/>Digital key</span></div>
-        <p className="description">{data.description}</p><details><summary>Activation information</summary><p>{data.activation} This demo provides sample keys only.</p></details>
+        <p className="description">{data.description}</p>
+        {Object.keys(data.attributes).length>0&&<dl className="product-attributes">
+          {Object.entries(filterNames).filter(([key])=>data.attributes[key]).map(([key,label])=><div key={key}><dt>{label}</dt><dd>{data.attributes[key]}</dd></div>)}
+        </dl>}<details><summary>Activation information</summary><p>{data.activation} This demo provides sample keys only.</p></details>
         <h2 className="offer-title">Seller offers</h2>
         {data.offers.map(o=><div className="offer" key={o.id}><div><strong>{o.seller}</strong><small>{o.stock ? `${o.stock} available` : 'Out of stock'}</small></div><strong>{money(o.cents)}</strong><button className="button primary" disabled={!o.stock} onClick={()=>add(data,o)}>Add to cart</button></div>)}
       </div>
@@ -219,23 +392,24 @@ function Auth() {
   const register=pathname==='/register';
   const {setUser}=useMarket();
   const navigate=useNavigate();
+  const [email,setEmail]=useState('');
+  const [password,setPassword]=useState('');
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
   const next=params.get('next')==='checkout' ? '/checkout' : params.get('next')==='cart' ? '/cart' : '/orders';
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError('');setBusy(true);
-    const form=new FormData(e.currentTarget);
     try {
-      setUser(await api<User>(register?'/register':'/login',{email:form.get('email'),password:form.get('password')}));
+      setUser(await api<User>(register?'/register':'/login',{email,password}));
       navigate(next,{replace:true});
     } catch (err) {setError((err as Error).message);}
     finally {setBusy(false);}
   }
   return <section className="form-panel"><span className="mark"><KeyRound size={20}/></span><h1>{register?'Create account':'Sign in'}</h1>
     {error&&<ErrorText message={error}/>}
-    <form onSubmit={submit}><label>Email<input type="email" name="email" autoComplete="email" required maxLength={254}/></label>
-      <label>Password<input type="password" name="password" required minLength={8} maxLength={72} autoComplete={register?'new-password':'current-password'}/></label>
+    <form onSubmit={submit}><label>Email<input type="email" name="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required maxLength={254}/></label>
+      <label>Password<input type="password" name="password" value={password} onChange={event=>setPassword(event.target.value)} required minLength={8} maxLength={72} autoComplete={register?'new-password':'current-password'}/></label>
       <button className="button primary" disabled={busy}>{busy?'Please wait…':register?'Create account':'Sign in'}</button>
     </form>
     <p>{register?'Already registered?':'New to Eneba?'} <Link to={(register?'/login':'/register')+(next==='/orders'?'':'?next='+next.slice(1))}>{register?'Sign in':'Create an account'}</Link></p>
@@ -446,7 +620,7 @@ function OrderPage() {
     <h2 className="receipt-title">Receipt summary</h2>
     {data.items.map(i=><article className="key-card" key={i.id}>
       <div className="receipt-item">
-        {i.artwork && <img src={i.artwork} alt=""/>}
+        {i.artwork ? <img src={i.artwork} alt=""/> : <span className="receipt-item-icon"><Gift size={22}/></span>}
         <div><h3>{i.product}</h3><p>{i.platform} · {i.region}</p><small>{i.seller} · Qty {i.quantity} · {money(i.cents)} each</small></div>
         <strong>{money(i.cents*i.quantity)}</strong>
       </div>
@@ -470,6 +644,12 @@ function Protected({children}:{children:ReactNode}) {
 
 function App() {
   const [cart,updateCart]=useState(()=>saved<Item[]>('keyshift.cart',[]));
+  const [wishlist,setWishlist]=useState(()=>saved<string[]>('eneba.wishlist',[]));
+  function toggleWishlist(slug:string) {
+    const next=wishlist.includes(slug)?wishlist.filter(item=>item!==slug):[...wishlist,slug];
+    localStorage.setItem('eneba.wishlist',JSON.stringify(next));
+    setWishlist(next);
+  }
   const [session,setSession]=useState<{user?:User|null; error:string}>({error:''});
   const {user,error:sessionError}=session;
   function setUser(next:User|null) {
@@ -490,10 +670,10 @@ function App() {
   useEffect(()=>{window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
   function setCart(items:Item[]) {localStorage.setItem('keyshift.cart',JSON.stringify(items));updateCart(items);}
-  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast}}>
+  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist}}>
     <Header/>
     <main className="wrap"><Routes>
-      <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
+      <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/store/:category" element={<Store/>}/><Route path="/wishlist" element={<Wishlist/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
       <Route path="/cart" element={<Cart key="cart"/>}/><Route path="/checkout" element={<Cart key="checkout" checkout/>}/><Route path="/login" element={<Auth key="login"/>}/><Route path="/register" element={<Auth key="register"/>}/>
       <Route path="/orders" element={<Protected><Orders/></Protected>}/><Route path="/orders/:id" element={<Protected><OrderPage/></Protected>}/>
       <Route path="*" element={<Empty title="Page not found"><Link to="/">Return home</Link></Empty>}/>

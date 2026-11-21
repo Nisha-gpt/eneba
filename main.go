@@ -134,9 +134,16 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	max, err := number(q.Get("max"), 100000, 0, 100000)
+	min, err := number(q.Get("min"), -1, 0, 1000000)
 	if err != nil {
 		return err
+	}
+	max, err := number(q.Get("max"), -1, 0, 1000000)
+	if err != nil {
+		return err
+	}
+	if max >= 0 && min > max {
+		return fail(400, "Minimum price exceeds maximum price.")
 	}
 	search := strings.ToLower(strings.Join(strings.Fields(q.Get("q")), " "))
 	if len(search) > 100 {
@@ -146,19 +153,69 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
 	if sortColumn == "" {
 		return fail(400, "Invalid sort order.")
 	}
+
+	selected := make(map[string][]string)
+	for _, key := range []string{"platform", "region", "country", "type", "brand", "os", "currency", "denomination"} {
+		if len(q[key]) > 20 {
+			return fail(400, "Too many filter values.")
+		}
+		for _, value := range q[key] {
+			if len(value) > 100 {
+				return fail(400, "Filter value is too long.")
+			}
+			if value != "" {
+				selected[key] = append(selected[key], value)
+			}
+		}
+	}
+	encoded, err := json.Marshal(selected)
+	if err != nil {
+		return err
+	}
 	return queryJSON(w, a.db.QueryRow(r.Context(), `
- WITH matched AS (
- SELECT *,CASE WHEN strpos(lower(name),$1)>0 THEN 2 ELSE word_similarity($1,lower(name)) END AS score
- FROM (`+catalog+`) products
- WHERE ($1='' OR strpos(lower(name),$1)>0 OR (length($1)>=3 AND word_similarity($1,lower(name))>=0.42))
- AND ($2='' OR platform=$2) AND ($3='' OR region=$3)
- AND ($4=100000 OR cents<=$4)
+ WITH RECURSIVE scope AS (
+  SELECT slug FROM categories WHERE slug=$2
+  UNION ALL SELECT c.slug FROM categories c JOIN scope s ON c.parent=s.slug
+ ), candidates AS (
+  SELECT p.*, attributes || jsonb_build_object('platform',platform,'region',region) AS fields,
+    CASE WHEN $1='' OR strpos(lower(name),$1)>0 THEN 2 ELSE word_similarity($1,lower(name)) END AS score
+  FROM (`+catalog+`) p
+  WHERE ($1='' OR strpos(lower(name),$1)>0 OR (length($1)>=3 AND word_similarity($1,lower(name))>=0.42))
+   AND ($2='' OR EXISTS(SELECT 1 FROM product_categories pc JOIN scope s ON s.slug=pc.category WHERE pc.product_id=p.id))
+ ), price_range AS (
+  SELECT * FROM candidates WHERE ($3::int<0 OR cents >= $3) AND ($4::int<0 OR cents <= $4)
+ ), evaluated AS (
+  SELECT p.*, ARRAY(
+    SELECT f.key FROM jsonb_each($5::jsonb) f
+    WHERE NOT COALESCE(f.value ? (p.fields->>f.key),false)
+  ) AS exclusions FROM price_range p
+ ), matched AS (
+  SELECT * FROM evaluated WHERE cardinality(exclusions)=0
  ), page AS (
- SELECT *, row_number() OVER(ORDER BY `+sortColumn+`,id) AS position FROM matched ORDER BY position LIMIT 8 OFFSET $5
+  SELECT *,row_number() OVER(ORDER BY `+sortColumn+`,id) AS position
+  FROM matched ORDER BY position LIMIT 8 OFFSET $6
+ ), counts AS (
+  SELECT f.key,f.value,count(*) AS count
+  FROM evaluated e CROSS JOIN LATERAL jsonb_each_text(e.fields) f
+  WHERE f.key IN ('platform','region','country','type','brand','os','currency','denomination')
+    AND e.exclusions <@ ARRAY[f.key]
+  GROUP BY f.key,f.value
+ ), facets AS (
+  SELECT key,jsonb_agg(jsonb_build_object('value',value,'count',count) ORDER BY value) AS options
+  FROM counts GROUP BY key
  )
- SELECT jsonb_build_object('items',COALESCE((SELECT jsonb_agg(to_jsonb(page)-'position'-'score' ORDER BY position) FROM page),'[]'),
+ SELECT jsonb_build_object(
+ 'category',(SELECT to_jsonb(c) FROM categories c WHERE c.slug=$2),
+ 'facets',COALESCE((SELECT jsonb_object_agg(key,options) FROM facets),'{}'),
+ 'items',COALESCE((SELECT jsonb_agg(to_jsonb(page)-'position'-'score'-'fields'-'exclusions' ORDER BY position) FROM page),'[]'),
  'total',(SELECT count(*) FROM matched),'pageSize',8)
- `, search, q.Get("platform"), q.Get("region"), max, (page-1)*8))
+ WHERE $2='' OR EXISTS(SELECT 1 FROM scope)
+ `, search, q.Get("category"), min, max, encoded, (page-1)*8))
+}
+
+func (a app) navigation(w http.ResponseWriter, r *http.Request) error {
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT jsonb_agg(to_jsonb(c) ORDER BY rank,slug) FROM categories c`))
 }
 
 func number(value string, fallback, min, max int) (int, error) {
@@ -481,6 +538,7 @@ func (a app) routes(static string) http.Handler {
 	}))
 	mux.HandleFunc("GET /api/home/bestsellers", handler(a.home("bestsellers")))
 	mux.HandleFunc("GET /api/home/deals", handler(a.home("deals")))
+	mux.HandleFunc("GET /api/navigation", handler(a.navigation))
 	mux.HandleFunc("GET /api/products", handler(a.store))
 	mux.HandleFunc("GET /api/products/{slug}", handler(a.product))
 	mux.HandleFunc("GET /api/filters", handler(func(w http.ResponseWriter, r *http.Request) error {

@@ -40,9 +40,20 @@ assert len(request(guest, "/home/deals")["items"]) == 5
 assert request(guest, "/filters")["regions"]
 first = request(guest, "/products")
 second = request(guest, "/products?page=2")
-assert first["total"] == second["total"] == 15
-assert len(first["items"]) == 8 and len(second["items"]) == 7
+assert first["total"] == second["total"] == 57
+assert len(first["items"]) == 8 and len(second["items"]) == 8
 assert {p["id"] for p in first["items"]}.isdisjoint(p["id"] for p in second["items"])
+categories = request(guest, "/navigation")
+assert len(categories) >= 37
+for category in categories:
+    listing = request(guest, "/products?category=" + category["slug"])
+    assert listing["total"] and listing["category"]["slug"] == category["slug"], category
+software = request(guest, "/products?category=software&os=Windows&os=Mac&region=Global&min=1000&max=3500")
+assert software["total"] == 4
+assert {item["attributes"]["os"] for item in software["items"]} == {"Windows", "Mac"}
+assert software["facets"]["brand"]
+gift = request(guest, "/products?category=e-gift-cards&country=India&currency=INR")
+assert gift["total"] == 1 and gift["items"][0]["attributes"]["denomination"] == "1000"
 filtered = request(guest, "/products?platform=Steam&region=Global&max=2500&sort=price-asc")["items"]
 assert len(filtered) >= 2 and all(p["platform"] == "Steam" and p["region"] == "Global" and p["cents"] <= 2500 for p in filtered)
 assert [p["cents"] for p in filtered] == sorted(p["cents"] for p in filtered)
