@@ -22,7 +22,7 @@ RUN adduser -D market
 COPY --from=backend /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
 COPY --from=backend /market /app/market
-COPY --from=frontend /src/web/dist /app/web/dist
+COPY --from=frontend --chown=market:market /src/web/dist /app/web/dist
 USER market
 ENV PORT=8080 STATIC_DIR=/app/web/dist
 EXPOSE 8080
