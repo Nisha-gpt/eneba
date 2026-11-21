@@ -457,9 +457,11 @@ func (a app) routes(static string) http.Handler {
 	mux.HandleFunc("POST /api/checkout", handler(a.checkout))
 	mux.HandleFunc("GET /api/orders", handler(a.orders))
 	mux.HandleFunc("GET /api/orders/{id}", handler(a.orders))
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+	unknownAPI := func(w http.ResponseWriter, r *http.Request) {
 		_ = write(w, 404, map[string]string{"error": "Unknown API route."})
-	})
+	}
+	mux.HandleFunc("/api", unknownAPI)
+	mux.HandleFunc("/api/", unknownAPI)
 	mux.Handle("GET /assets/", http.FileServer(http.Dir(static)))
 	mux.Handle("GET /art/", http.FileServer(http.Dir(static)))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

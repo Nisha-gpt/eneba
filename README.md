@@ -24,7 +24,7 @@ set +a
 go run .
 ```
 
-Open http://localhost:8080. Leave the Go process running and use `cd web && npm run dev` for Vite hot reload. Vite proxies API requests to port 8080. When editing artwork, rebuild the production frontend to refresh the Go-served copy.
+Open http://localhost:8080. Leave the Go process running and use `cd web && KEYSHIFT_DEV_API_URL=http://localhost:8080 npm run dev` for Vite hot reload. This sets the API proxy for standalone Vite only. When editing artwork, rebuild the production frontend to refresh the Go-served copy.
 
 `DATABASE_URL` is required. `PORT` defaults to 8080 and `STATIC_DIR` defaults to `web/dist`. HTTPS deployments use secure cookies by default. The example disables that flag for local HTTP. Database migrations and seed data run once per database at startup, under a PostgreSQL advisory lock. Startup fails if database access or migration fails.
 
@@ -57,6 +57,23 @@ Run `go vet ./...` and `npm run build` in `web/` as appropriate. To run the API 
 Browser verification uses the built app and exercises search → product → seller offer → cart refresh → registration → declined payment → successful purchase → order history. Verify this again with a dedicated offer after deployment.
 
 ## Deployment
+
+### Vercel Services
+
+Import the repository on Vercel with the repository root as the project root. The root `vercel.json` builds two services. `app` runs the existing Go server on the platform-supplied port and receives `/api` and its subpaths. `web` builds the Vite storefront and serves the remaining paths, with an HTML fallback for React Router deep links. Artwork and bundles are served by `web`. The browser sends relative `/api/…` requests through the project router. Neither service calls the other at runtime, so there are no service bindings.
+
+Set `DATABASE_URL` in Vercel project settings to a TLS-enabled PostgreSQL connection string with permission to run the startup migrations. Keep the default secure cookies in deployment. For local testing, link the Vercel project and run from the repository root with local database settings:
+
+```sh
+set -a
+. ./.env
+set +a
+vercel dev
+```
+
+Check `/api/health`, reload a product page directly, and complete the demo checkout under the same project origin. Run the smoke script only against a disposable database.
+
+### Docker and Render
 
 The Dockerfile builds a single container with the React app and Go server. `render.yaml` configures a candidate Render free Docker web service and health check. Use a Neon PostgreSQL database with `pg_trgm` available and set its direct, TLS-enabled connection string as the secret `DATABASE_URL` in the hosting dashboard. On Render, import the repository as a Blueprint and choose the free plan if currently available to your account. Confirm `GET /api/health` and complete the browser flow on the assigned public HTTPS URL. Keep `COOKIE_SECURE` at its default on HTTPS.
 
