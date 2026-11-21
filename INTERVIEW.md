@@ -1,6 +1,6 @@
 # Interview guide
 
-**Walk through a purchase.** Search for `cybrpunk`. Open Cyberpunk 2077, compare the three seller offers, add one, and refresh the cart. Register from checkout, simulate a decline, then approve the same cart and open the delivered demo key in order history.
+**Walk through a purchase.** Search for `cybrpunk`. Open Cyberpunk 2077, compare the three seller offers, add one, and refresh the cart. Register from checkout, enter the all-zero test card to decline, then use the 4242 test card to approve the same cart and open the delivered demo key in order history.
 
 **Explain the backend boundary.** The browser presents a price estimate and sends an offer ID and quantity. PostgreSQL supplies the authoritative price and stock. Go serves both the REST API and the compiled frontend, so requests and the session cookie share an origin.
 

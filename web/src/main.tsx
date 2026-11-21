@@ -1,4 +1,4 @@
-import { useEffect, useState, createContext, useContext } from 'react';
+import { useEffect, useState, useRef, createContext, useContext } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -12,7 +12,7 @@ type Offer = {id:number; seller:string; cents:number; stock:number};
 type Item = {offer:number; quantity:number; name:string; seller:string; cents:number; slug:string};
 type User = {email:string};
 type Order = {id:number; cents:number; created_at:string};
-type OrderDetail = Order & {items:{product:string; seller:string; cents:number; quantity:number; keys:string[]}[]};
+type OrderDetail = Order & {items:{id:number; product:string; seller:string; cents:number; quantity:number; keys:string[]; artwork:string; platform:string; region:string; activation:string}[]};
 type Banner = {eyebrow:string; headline:string; subtitle:string; action:string; destination:string; artwork:string};
 
 const money = (cents:number) => new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(cents/100);
@@ -158,14 +158,14 @@ function Store() {
     <div className="store-layout">
       <aside className="filters"><h2><SlidersHorizontal size={18}/> Filters</h2>
         {filters.error && <ErrorText message={filters.error}/>}
-        <label>Platform<select value={params.get('platform')||''} onChange={e=>update('platform',e.target.value)}><option value="">All platforms</option>{filters.data?.platforms.map(v=><option key={v}>{v}</option>)}</select></label>
-        <label>Region<select value={params.get('region')||''} onChange={e=>update('region',e.target.value)}><option value="">All regions</option>{filters.data?.regions.map(v=><option key={v}>{v}</option>)}</select></label>
-        <label>Maximum price<select value={params.get('max')||''} onChange={e=>update('max',e.target.value)}><option value="">Any price</option>{[500,1000,2000,3000,5000].map(v=><option key={v} value={v}>{money(v)}</option>)}</select></label>
+        <label>Platform<select aria-label="Platform" value={params.get('platform')||''} onChange={e=>update('platform',e.target.value)}><option value="">All platforms</option>{filters.data?.platforms.map(v=><option key={v}>{v}</option>)}</select></label>
+        <label>Region<select aria-label="Region" value={params.get('region')||''} onChange={e=>update('region',e.target.value)}><option value="">All regions</option>{filters.data?.regions.map(v=><option key={v}>{v}</option>)}</select></label>
+        <label>Maximum price<select aria-label="Maximum price" value={params.get('max')||''} onChange={e=>update('max',e.target.value)}><option value="">Any price</option>{[500,1000,2000,3000,5000].map(v=><option key={v} value={v}>{money(v)}</option>)}</select></label>
         <button className="button secondary" onClick={()=>setParams(query ? {q:query} : {})}>Clear filters</button>
       </aside>
       <div className="results">
         <div className="result-head"><span>{data ? `${data.total} ${data.total===1?'product':'products'}` : 'Products'}</span>
-          <label>Sort by <select value={params.get('sort')||''} onChange={e=>update('sort',e.target.value)}><option value="">Relevance</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option><option value="name-asc">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></label></div>
+          <label>Sort by <select aria-label="Sort by" value={params.get('sort')||''} onChange={e=>update('sort',e.target.value)}><option value="">Relevance</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option><option value="name-asc">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></label></div>
         {error ? <ErrorText message={error}/> : !data ? <Loading/> : data.items.length ? <div className="grid store-grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products found"><p>Try a different search or clear the filters.</p><button className="button secondary" onClick={()=>setParams({})}>Show all games</button></Empty>}
         {data && (data.total>data.pageSize || page>1) && <div className="pagination"><button className="button secondary" disabled={page<=1} onClick={()=>update('page',String(page-1))}>Previous</button><span>Page {page} of {Math.max(1,Math.ceil(data.total/data.pageSize))}</span><button className="button secondary" disabled={page*data.pageSize>=data.total} onClick={()=>update('page',String(page+1))}>Next</button></div>}
       </div>
@@ -207,7 +207,7 @@ function Auth() {
   const navigate=useNavigate();
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
-  const next=params.get('next')==='cart' ? '/cart' : '/orders';
+  const next=params.get('next')==='checkout' ? '/checkout' : params.get('next')==='cart' ? '/cart' : '/orders';
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError('');setBusy(true);
@@ -224,51 +224,166 @@ function Auth() {
       <label>Password<input type="password" name="password" required minLength={8} maxLength={72} autoComplete={register?'new-password':'current-password'}/></label>
       <button className="button primary" disabled={busy}>{busy?'Please wait…':register?'Create account':'Sign in'}</button>
     </form>
-    <p>{register?'Already registered?':'New to Keyshift?'} <Link to={(register?'/login':'/register')+(next==='/cart'?'?next=cart':'')}>{register?'Sign in':'Create an account'}</Link></p>
+    <p>{register?'Already registered?':'New to Keyshift?'} <Link to={(register?'/login':'/register')+(next==='/orders'?'':'?next='+next.slice(1))}>{register?'Sign in':'Create an account'}</Link></p>
   </section>;
 }
 
-function Cart() {
+type CheckoutQuote = {cents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number}[]};
+type Scenario = 'test_card_approved' | 'test_card_declined';
+type PendingPayment = {basket:string;scenario:Scenario;cents:number;id:string};
+type CardField = 'name' | 'number' | 'expiry' | 'cvc';
+const testCards: Record<string,Scenario> = {'4242424242424242':'test_card_approved','0000000000000000':'test_card_declined'};
+
+function digits(value:string, limit:number) {
+  return value.replace(/\D/g,'').slice(0,limit);
+}
+
+function Cart({checkout=false}:{checkout?:boolean}) {
   const {cart,setCart,user,sessionError}=useMarket();
-  const [payment,setPayment]=useState('success');
+  const [card,setCard]=useState({name:'',number:'',expiry:'',cvc:''});
+  const [invalid,setInvalid]=useState<Partial<Record<CardField,string>>>({});
   const [busy,setBusy]=useState(false);
+  const inFlight=useRef(false);
   const [error,setError]=useState('');
+  const [quote,setQuote]=useState<CheckoutQuote>();
+  const [quoteError,setQuoteError]=useState('');
+  const [quoteVersion,refreshQuote]=useState(0);
   const navigate=useNavigate();
+  const items=cart.map(({offer,quantity})=>({offer,quantity})).sort((a,b)=>a.offer-b.offer);
+  const itemJSON=JSON.stringify(items);
+  const basket=JSON.stringify({email:user?.email,items});
+  const savedPayment=saved<PendingPayment|null>('keyshift.checkout',null);
+  const pending=savedPayment?.basket===basket?savedPayment:null;
   const total=cart.reduce((sum,i)=>sum+i.quantity*i.cents,0);
+  const unavailable=quote?.items.some(i=>!i.name || i.available<i.quantity);
+  const payable=pending?.cents ?? quote?.cents;
+  useEffect(()=>{
+    if (!checkout || !user || itemJSON==='[]') return;
+    const controller=new AbortController();
+    setQuote(undefined);
+    setQuoteError('');
+    api<CheckoutQuote>('/checkout/quote',{items:JSON.parse(itemJSON)},controller.signal)
+      .then(setQuote).catch(err=>{
+        if (!controller.signal.aborted) setQuoteError((err as Error).message);
+      });
+    return ()=>controller.abort();
+  },[checkout,user,itemJSON,quoteVersion]);
+
   function quantity(offer:number,value:number) {
     if (!Number.isInteger(value) || value<1 || value>20) return;
     setCart(cart.map(i=>i.offer===offer?{...i,quantity:value}:i));
   }
-  async function buy() {
-    setBusy(true);setError('');
-    const items=cart.map(({offer,quantity})=>({offer,quantity})).sort((a,b)=>a.offer-b.offer);
-    const fingerprint=JSON.stringify({email:user?.email,items,payment});
-    const pending=saved<{fingerprint:string;id:string}|null>('keyshift.checkout',null);
-    const id=pending?.fingerprint===fingerprint ? pending.id : crypto.randomUUID();
-    localStorage.setItem('keyshift.checkout',JSON.stringify({fingerprint,id}));
+
+  function update(field:CardField,value:string) {
+    setCard(previous=>({...previous,[field]:value}));
+    setInvalid(previous=>({...previous,[field]:undefined}));
+    setError('');
+  }
+
+  async function buy(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (inFlight.current || payable===undefined || (!pending && (!quote || unavailable))) return;
+    const problems:Partial<Record<CardField,string>>={};
+    const scenario=testCards[digits(card.number,16)];
+    if (!card.name.trim()) problems.name='Enter a cardholder name.';
+    if (!scenario) problems.number='Use one of the card numbers in Test payment details.';
+    const now=new Date();
+    const [month,year]=card.expiry.split('/').map(Number);
+    if (!/^\d{2}\/\d{2}$/.test(card.expiry) || month<1 || month>12 ||
+        new Date(2000+year,month,1)<=now) problems.expiry='Enter an unexpired date in MM/YY format.';
+    if (!/^\d{3}$/.test(card.cvc)) problems.cvc='Enter a three-digit test CVC.';
+    setInvalid(problems);
+    const first=Object.keys(problems)[0];
+    if (first) {
+      document.getElementById('test-card-'+first)?.focus();
+      return;
+    }
+    if (pending && pending.scenario!==scenario) {
+      setError('The previous payment could not be confirmed. Retry with the same test card first.');
+      return;
+    }
+    inFlight.current=true;
+    setBusy(true);
+    setError('');
+    const id=pending?.id ?? crypto.randomUUID();
     try {
-      const order=await api<{id:number}>('/checkout',{items,payment,requestId:id});
+      localStorage.setItem('keyshift.checkout',JSON.stringify({basket,scenario,cents:payable,id}));
+      const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id});
       setCart([]);
       localStorage.removeItem('keyshift.checkout');
-      navigate('/orders/'+order.id+'?confirmed=1',{replace:true});
+      navigate('/orders/'+order.id,{replace:true});
     } catch (err) {
-      if (err instanceof RequestError && err.status===401) navigate('/login?next=cart');
-      else setError((err as Error).message);
-    } finally {setBusy(false);}
+      if (err instanceof RequestError && err.status===401) {
+        navigate('/login?next=checkout');
+      } else {
+        if (err instanceof RequestError && [400,402,409].includes(err.status)) {
+          localStorage.removeItem('keyshift.checkout');
+          if (err.status===409) refreshQuote(version=>version+1);
+        }
+        setError((err as Error).message);
+      }
+    } finally {
+      inFlight.current=false;
+      setBusy(false);
+    }
   }
-  return <div className="inner"><Breadcrumb>Cart</Breadcrumb><h1>Your cart</h1>
+
+  const fieldError=(field:CardField)=>invalid[field] && <small className="field-error" id={'test-error-'+field}>{invalid[field]}</small>;
+  const fieldProps=(field:CardField)=>({
+    id:'test-card-'+field, autoComplete:'off', 'aria-invalid':Boolean(invalid[field]),
+    'aria-describedby':invalid[field]?'test-error-'+field:undefined,
+  });
+
+  return <div className="inner"><Breadcrumb>{checkout?<><Link to="/cart">Cart</Link><span>/</span>Checkout</>:'Cart'}</Breadcrumb>
+    <h1>{checkout?'Checkout':'Your cart'}</h1>
     {!cart.length ? <Empty title="Your cart is empty"><Link className="button primary" to="/store">Browse games<ArrowRight size={18}/></Link></Empty> :
-      <div className="cart-layout"><div className="cart-items">{cart.map(i=><div className="cart-row" key={i.offer}>
-        <div><Link to={'/product/'+i.slug}><strong>{i.name}</strong></Link><small>{i.seller} · {money(i.cents)} each</small></div>
-        <label>Qty<input aria-label={i.name+' quantity'} type="number" min={1} max={20} value={i.quantity} disabled={busy} onChange={e=>quantity(i.offer,e.target.valueAsNumber)}/></label>
-        <button className="text-button" disabled={busy} onClick={()=>setCart(cart.filter(x=>x.offer!==i.offer))}>Remove</button>
-      </div>)}</div><aside className="summary"><h2>Order summary</h2><div className="sum"><span>Estimated total</span><strong>{money(total)}</strong></div>
-      <p>Simulated payment. Your order will contain demo keys only.</p>
-      {sessionError && <ErrorText message={sessionError}/>}
-      {user ? <><label>Payment outcome<select disabled={busy} value={payment} onChange={e=>setPayment(e.target.value)}><option value="success">Simulate approval</option><option value="failure">Simulate decline</option></select></label>
-      {error && <ErrorText message={error}/>}<button className="button primary" disabled={busy} onClick={buy}>{busy?'Processing…':'Place demo order'}<ArrowRight size={18}/></button></> :
-      user===undefined ? <Loading/> : <Link className="button primary" to="/login?next=cart">Sign in to checkout<ArrowRight size={18}/></Link>}
-      </aside></div>}
+      <div className="cart-layout">
+        {checkout ? <div>
+          {sessionError && <ErrorText message={sessionError}/>}
+          {user===undefined ? <Loading/> : !user ? <div className="summary"><h2>Sign in to continue</h2><Link className="button primary" to="/login?next=checkout">Sign in to checkout</Link></div> :
+          <form className="payment-panel" onSubmit={buy} noValidate autoComplete="off">
+            <div className="payment-heading"><h2>Card payment</h2><span className="test-mode"><ShieldCheck size={16}/>Test mode — no real charges</span></div>
+            <details className="payment-help"><summary>Test payment details</summary>
+              <dl><dt>Successful payment</dt><dd><code>4242 4242 4242 4242</code></dd><dt>Declined payment</dt><dd><code>0000 0000 0000 0000</code></dd></dl>
+              <p>Use any test name, a future expiry date, and any three digits for CVC.</p>
+            </details>
+            {error && <ErrorText message={error}/>}
+            <fieldset disabled={busy}>
+              <label>Cardholder name<input {...fieldProps('name')} value={card.name} onChange={e=>update('name',e.target.value)} maxLength={80} placeholder="Cardholder name" required/>{fieldError('name')}</label>
+              <label>Card number<input {...fieldProps('number')} inputMode="numeric" value={card.number} onChange={e=>update('number',digits(e.target.value,16).match(/.{1,4}/g)?.join(' ')||'')} placeholder="0000 0000 0000 0000" required/>{fieldError('number')}</label>
+              <div className="card-fields">
+                <label>Expiry date<input {...fieldProps('expiry')} inputMode="numeric" value={card.expiry} onChange={e=>{const value=digits(e.target.value,4);update('expiry',value.length>2?value.slice(0,2)+'/'+value.slice(2):value);}} placeholder="MM/YY" required/>{fieldError('expiry')}</label>
+                <label>CVC<input {...fieldProps('cvc')} type="password" inputMode="numeric" value={card.cvc} onChange={e=>update('cvc',digits(e.target.value,3))} placeholder="•••" required/>{fieldError('cvc')}</label>
+              </div>
+              <button className="button primary" disabled={payable===undefined || (!pending && unavailable)}>{busy?'Processing…':payable!==undefined?'Pay '+money(payable):'Pay'}<ArrowRight size={18}/></button>
+            </fieldset>
+          </form>}
+          <Link className="back-link" to="/cart"><ArrowLeft size={16}/> Back to cart</Link>
+        </div> : <div className="cart-items">{cart.map(i=><div className="cart-row" key={i.offer}>
+          <div><Link to={'/product/'+i.slug}><strong>{i.name}</strong></Link><small>{i.seller} · {money(i.cents)} each</small></div>
+          <label>Qty<input aria-label={i.name+' quantity'} type="number" min={1} max={20} value={i.quantity} onChange={e=>quantity(i.offer,e.target.valueAsNumber)}/></label>
+          <button className="text-button" onClick={()=>setCart(cart.filter(x=>x.offer!==i.offer))}>Remove</button>
+        </div>)}</div>}
+        <aside className="summary"><h2>Order summary</h2>
+          <ul className="receipt-lines">{cart.map(i=>{
+            const current=quote?.items.find(line=>line.offer===i.offer);
+            const unitPrice=checkout&&user?current?.cents:i.cents;
+            return <li key={i.offer}>
+              <div><strong>{current?.name??i.name}</strong><small>{current?.seller??i.seller} · Qty {i.quantity}</small>
+                {current && current.available<i.quantity && <small className="field-error">{current.available} available</small>}</div>
+              <strong>{unitPrice==null?'—':money(unitPrice*i.quantity)}</strong>
+            </li>;
+          })}</ul>
+          <div className="sum"><span>{checkout?'Total':'Estimated total'}</span><strong>{checkout && user ? payable===undefined?'—':money(payable):money(total)}</strong></div>
+          {checkout && user && <>
+            {pending && <p>A previous payment may still be pending. Retry with the same test card to check its outcome.</p>}
+            {quoteError && <><ErrorText message={quoteError}/><button className="button secondary" onClick={()=>refreshQuote(version=>version+1)}>Refresh total</button></>}
+            {!pending && !quoteError && !quote && <Loading/>}
+            {!pending && unavailable && <ErrorText message="Some offers are unavailable. Update your cart before paying."/>}
+          </>}
+          {!checkout && <Link className="button primary" to="/checkout">Continue to checkout<ArrowRight size={18}/></Link>}
+        </aside>
+      </div>}
   </div>;
 }
 
@@ -289,21 +404,45 @@ function Orders() {
   </div>;
 }
 
+function ReceivedKey({code,index}:{code:string;index:number}) {
+  const [revealed,setRevealed]=useState(false);
+  const [copy,setCopy]=useState('');
+  async function copyKey() {
+    try {await navigator.clipboard.writeText(code);setCopy('Key copied.');}
+    catch {setCopy('Clipboard unavailable. Select and copy the key.');}
+  }
+  return <div className="key-entry">
+    <div><small>Key {index+1}</small><code>{revealed?code:'•••• •••• •••• ••••'}</code></div>
+    <div className="actions">
+      <button className="button secondary" aria-pressed={revealed} onClick={()=>{setRevealed(!revealed);setCopy('');}}>{revealed?'Hide':'Reveal'}</button>
+      <button className="button secondary" disabled={!revealed} onClick={copyKey}>Copy</button>
+    </div>
+    {copy && <small role="status">{copy}</small>}
+  </div>;
+}
+
 function OrderPage() {
   const {id}=useParams();
-  const [params]=useSearchParams();
   const {data,error}=useData<OrderDetail>('/orders/'+id);
   if (error) return <ErrorText message={error}/>;
   if (!data) return <Loading/>;
-  return <div className="inner"><Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
-    <div className="eyebrow section-kicker"><Check size={17}/> PAYMENT SIMULATED</div>
-    <h1>{params.has('confirmed')?'Order confirmed':`Order #${data.id}`}</h1>
-    <p>{money(data.cents)} · {new Date(data.created_at).toLocaleDateString()} · Demo keys</p>
-    <div className="order-list">{data.items.map((i,index)=><article className="key-card" key={index}>
-      <h2>{i.product}</h2><p>{i.seller} · {i.quantity} × {money(i.cents)}</p>
-      {i.keys.map(k=><code key={k}>{k}</code>)}
-    </article>)}</div>
-    <Link className="button secondary inline" to="/orders"><ArrowLeft size={17}/> Order history</Link>
+  return <div className="inner receipt">
+    <Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
+    <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>Payment successful</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()}</p></div><strong>{money(data.cents)}</strong></div>
+    <h2 className="receipt-title">Receipt summary</h2>
+    {data.items.map(i=><article className="key-card" key={i.id}>
+      <div className="receipt-item">
+        {i.artwork && <img src={i.artwork} alt=""/>}
+        <div><h3>{i.product}</h3><p>{i.platform} · {i.region}</p><small>{i.seller} · Qty {i.quantity} · {money(i.cents)} each</small></div>
+        <strong>{money(i.cents*i.quantity)}</strong>
+      </div>
+      <div className="key-panel">
+        <div className="key-heading"><h3><KeyRound size={17}/> Digital keys</h3><span className="test-mode">Test key — cannot be redeemed</span></div>
+        {i.keys.map((code,index)=><ReceivedKey key={index} code={code} index={index}/>)}
+        {i.activation && <details><summary>How to activate on {i.platform}</summary><p>{i.activation}</p></details>}
+      </div>
+    </article>)}
+    <div className="actions receipt-actions"><Link className="button secondary" to="/orders">View orders</Link><Link className="button primary" to="/store">Continue shopping<ArrowRight size={18}/></Link></div>
   </div>;
 }
 
@@ -341,7 +480,7 @@ function App() {
     <Header/>
     <main className="wrap"><Routes>
       <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
-      <Route path="/cart" element={<Cart/>}/><Route path="/login" element={<Auth key="login"/>}/><Route path="/register" element={<Auth key="register"/>}/>
+      <Route path="/cart" element={<Cart key="cart"/>}/><Route path="/checkout" element={<Cart key="checkout" checkout/>}/><Route path="/login" element={<Auth key="login"/>}/><Route path="/register" element={<Auth key="register"/>}/>
       <Route path="/orders" element={<Protected><Orders/></Protected>}/><Route path="/orders/:id" element={<Protected><OrderPage/></Protected>}/>
       <Route path="*" element={<Empty title="Page not found"><Link to="/">Return home</Link></Empty>}/>
     </Routes></main>

@@ -72,11 +72,16 @@ offer = offers[0]
 assert offer["stock"] == 3, "Run on a fresh disposable database."
 
 
-def checkout_payload(quantity, outcome="success"):
-    return {"requestId": str(uuid.uuid4()), "payment": outcome, "items": [{"offer": offer["id"], "quantity": quantity}]}
+def checkout_payload(quantity, outcome="test_card_approved"):
+    return {"requestId": str(uuid.uuid4()), "payment": outcome, "expectedCents": offer["cents"] * quantity,
+            "items": [{"offer": offer["id"], "quantity": quantity}]}
 
 
-request(buyer, "/checkout", checkout_payload(1, "failure"), expected=402)
+quote = request(buyer, "/checkout/quote", {"items": checkout_payload(2)["items"]})
+assert quote["cents"] == offer["cents"] * 2 and quote["items"][0]["available"] == 3
+request(buyer, "/checkout", checkout_payload(1, "unsupported"), expected=400)
+request(buyer, "/checkout", {**checkout_payload(1), "expectedCents": 1}, expected=409)
+request(buyer, "/checkout", checkout_payload(1, "test_card_declined"), expected=402)
 assert request(buyer, "/orders") == []
 assert request(guest, product_path)["offers"][0]["stock"] == 3
 
@@ -86,9 +91,10 @@ with concurrent.futures.ThreadPoolExecutor(4) as pool:
 assert len({order["id"] for order in orders}) == 1
 id_ = orders[0]["id"]
 assert request(buyer, "/checkout", payload)["id"] == id_
-request(buyer, "/checkout", {**payload, "payment": "failure"}, expected=409)
+request(buyer, "/checkout", {**payload, "payment": "test_card_declined"}, expected=409)
 detail = request(buyer, f"/orders/{id_}")
 assert detail["cents"] == offer["cents"] * 2
+assert detail["items"][0]["platform"] == "Steam" and detail["items"][0]["artwork"] and detail["items"][0]["activation"]
 keys = set(detail["items"][0]["keys"])
 assert len(keys) == 2 and all(key.startswith("DEMO-") for key in keys)
 request(other, f"/orders/{id_}", expected=404)

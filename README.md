@@ -46,9 +46,11 @@ Search normalizes whitespace and case and gives literal substrings precedence in
 
 ## Checkout and key delivery
 
-The browser stores offer IDs, quantities, and displayed price estimates in local storage, including through sign-in. The server authenticates the buyer with an expiring, HttpOnly, SameSite cookie and validates every requested offer and quantity. The browser sends a checkout ID that it keeps for retries of the same cart and payment choice. A unique constraint scopes that ID to the buyer. The backend returns the existing order on a matching retry and rejects a changed payload using the same ID.
+The browser keeps seller offer IDs and quantities through sign-in. At checkout, the Go API quotes current prices and stock. Use **4242 4242 4242 4242** for approval or **0000 0000 0000 0000** for a decline, along with a test name, a future expiry, and any three-digit CVC. The form sends only the scenario identifier and order information. Card data stays in the form and is never logged or saved by the app.
 
-Checkout locks selected offers in a consistent order, reads current prices, and claims unused keys within a single database transaction. A payment decline or insufficient stock rolls back the entire transaction. Buyers can view their keys on confirmation and in authenticated order history. The server verifies ownership on every order detail request.
+The server authenticates the buyer using an expiring, HttpOnly, SameSite cookie. Checkout locks selected offers in a consistent order, verifies the quoted total and stock, and assigns one key per unit in a single transaction. A decline, changed price, or insufficient stock leaves the basket available for review. The browser reuses an unresolved checkout ID when retrying the same scenario. PostgreSQL enforces uniqueness per account and the API returns the existing order on matching retries.
+
+Receipts show the purchased items and hide keys until the buyer reveals them. The server checks order ownership on every request. New order lines snapshot product details, and older receipts resolve these details through their original offers without changing issued keys.
 
 ## Validation
 

@@ -284,12 +284,70 @@ type line struct {
 	Quantity int   `json:"quantity"`
 }
 type checkoutRequest struct {
-	Items     []line `json:"items"`
-	RequestID string `json:"requestId"`
-	Payment   string `json:"payment"`
+	Items         []line `json:"items"`
+	RequestID     string `json:"requestId"`
+	Payment       string `json:"payment"`
+	ExpectedCents *int   `json:"expectedCents,omitempty"`
 }
 
 var requestPattern = regexp.MustCompile(`^[A-Za-z0-9-]{16,80}$`)
+
+// testPayment is internal to checkout. Its inputs never include card details.
+func testPayment(scenario string) error {
+	switch scenario {
+	case "test_card_approved":
+		return nil
+	case "test_card_declined":
+		return fail(402, "Test payment declined. Check the test payment details and try again.")
+	default:
+		return fail(400, "Use one of the provided test cards.")
+	}
+}
+
+func validateLines(items []line) error {
+	if len(items) < 1 || len(items) > 20 {
+		return fail(400, "Choose between 1 and 20 offers.")
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Offer < items[j].Offer })
+	for i, l := range items {
+		if l.Offer < 1 || l.Quantity < 1 || l.Quantity > 20 || (i > 0 && l.Offer == items[i-1].Offer) {
+			return fail(400, "Invalid offer or quantity.")
+		}
+	}
+	return nil
+}
+
+func (a app) quote(w http.ResponseWriter, r *http.Request) error {
+	if _, _, err := a.account(r); err != nil {
+		return err
+	}
+	var req struct {
+		Items []line `json:"items"`
+	}
+	if err := read(w, r, &req); err != nil {
+		return err
+	}
+	if err := validateLines(req.Items); err != nil {
+		return err
+	}
+	items, err := json.Marshal(req.Items)
+	if err != nil {
+		return err
+	}
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+      SELECT jsonb_build_object(
+        'cents',COALESCE(sum(o.cents * i.quantity), 0),
+        'items',jsonb_agg(jsonb_build_object('offer',i.offer,'quantity',i.quantity,
+          'name',p.name,'seller',s.name,'cents',o.cents,
+          'available',COALESCE(stock.count, 0)) ORDER BY i.offer))
+      FROM jsonb_to_recordset($1::jsonb) AS i(offer bigint, quantity integer)
+      LEFT JOIN offers o ON o.id=i.offer
+      LEFT JOIN products p ON p.id=o.product_id
+      LEFT JOIN sellers s ON s.id=o.seller_id
+      LEFT JOIN LATERAL (
+        SELECT count(*) FROM inventory WHERE offer_id=o.id AND line_id IS NULL
+      ) stock ON true`, items))
+}
 
 func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
 	account, _, err := a.account(r)
@@ -300,15 +358,11 @@ func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
 	if err := read(w, r, &req); err != nil {
 		return err
 	}
-	if !requestPattern.MatchString(req.RequestID) || len(req.Items) < 1 || len(req.Items) > 20 ||
-		(req.Payment != "success" && req.Payment != "failure") {
+	if !requestPattern.MatchString(req.RequestID) || req.ExpectedCents == nil || *req.ExpectedCents < 1 {
 		return fail(400, "Invalid checkout request.")
 	}
-	sort.Slice(req.Items, func(i, j int) bool { return req.Items[i].Offer < req.Items[j].Offer })
-	for i, l := range req.Items {
-		if l.Offer < 1 || l.Quantity < 1 || l.Quantity > 20 || (i > 0 && l.Offer == req.Items[i-1].Offer) {
-			return fail(400, "Invalid offer or quantity.")
-		}
+	if err := validateLines(req.Items); err != nil {
+		return err
 	}
 	payload, _ := json.Marshal(req)
 	hash := sha256.Sum256(payload)
@@ -350,15 +404,16 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 	if err != nil {
 		return 0, err
 	}
-	if req.Payment == "failure" {
-		return 0, fail(402, "Demo payment declined. Your cart is still available.")
+	if err := testPayment(req.Payment); err != nil {
+		return 0, err
 	}
 	total := 0
 	for _, l := range req.Items {
 		var cents int
 		var product, seller string
-		err = tx.QueryRow(ctx, `SELECT o.cents,p.name,s.name FROM offers o
-  JOIN products p ON p.id=o.product_id JOIN sellers s ON s.id=o.seller_id WHERE o.id=$1 FOR UPDATE OF o`, l.Offer).Scan(&cents, &product, &seller)
+		var details json.RawMessage
+		err = tx.QueryRow(ctx, `SELECT o.cents,p.name,s.name, jsonb_build_object('artwork',p.artwork,'platform',p.platform,'region',p.region,'activation',p.activation) FROM offers o
+  JOIN products p ON p.id=o.product_id JOIN sellers s ON s.id=o.seller_id WHERE o.id=$1 FOR UPDATE OF o`, l.Offer).Scan(&cents, &product, &seller, &details)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, fail(409, "An offer is no longer available.")
 		}
@@ -366,8 +421,8 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 			return 0, err
 		}
 		var lineID int64
-		err = tx.QueryRow(ctx, `INSERT INTO order_lines(order_id,offer_id,product_name,seller_name,cents,quantity)
-  VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, order, l.Offer, product, seller, cents, l.Quantity).Scan(&lineID)
+		err = tx.QueryRow(ctx, `INSERT INTO order_lines(order_id,offer_id,product_name,seller_name,cents,quantity,product_details)
+  VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, order, l.Offer, product, seller, cents, l.Quantity, details).Scan(&lineID)
 		if err != nil {
 			return 0, err
 		}
@@ -380,6 +435,9 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 			return 0, fail(409, product+" has insufficient stock. Update your cart and try again.")
 		}
 		total += cents * l.Quantity
+	}
+	if total != *req.ExpectedCents {
+		return 0, fail(409, "The total changed. Review the updated order summary before paying.")
 	}
 	if _, err = tx.Exec(ctx, `UPDATE orders SET cents=$1 WHERE id=$2`, total, order); err != nil {
 		return 0, err
@@ -399,9 +457,10 @@ func (a app) orders(w http.ResponseWriter, r *http.Request) error {
 		}
 		return queryJSON(w, a.db.QueryRow(r.Context(), `
   SELECT jsonb_build_object('id',o.id,'cents',o.cents,'created_at',o.created_at,'items',(
-   SELECT jsonb_agg(jsonb_build_object('product',l.product_name,'seller',l.seller_name,'cents',l.cents,
-    'quantity',l.quantity,'keys',(SELECT jsonb_agg(i.code ORDER BY i.id) FROM inventory i WHERE i.line_id=l.id)) ORDER BY l.id)
-   FROM order_lines l WHERE l.order_id=o.id))
+   SELECT jsonb_agg(jsonb_build_object('id',l.id,'product',l.product_name,'seller',l.seller_name,'cents',l.cents,
+    'quantity',l.quantity,'keys',COALESCE((SELECT jsonb_agg(i.code ORDER BY i.id) FROM inventory i WHERE i.line_id=l.id),'[]'))
+    || COALESCE(l.product_details,jsonb_build_object('artwork',p.artwork,'platform',p.platform,'region',p.region,'activation',p.activation)) ORDER BY l.id)
+   FROM order_lines l JOIN offers f ON f.id=l.offer_id JOIN products p ON p.id=f.product_id WHERE l.order_id=o.id))
   FROM orders o WHERE o.id=$1 AND o.account_id=$2`, n, id))
 	}
 	return queryJSON(w, a.db.QueryRow(r.Context(), `
@@ -454,6 +513,7 @@ func (a app) routes(static string) http.Handler {
 		a.cookie(w, "", -1)
 		return write(w, 200, nil)
 	}))
+	mux.HandleFunc("POST /api/checkout/quote", handler(a.quote))
 	mux.HandleFunc("POST /api/checkout", handler(a.checkout))
 	mux.HandleFunc("GET /api/orders", handler(a.orders))
 	mux.HandleFunc("GET /api/orders/{id}", handler(a.orders))
