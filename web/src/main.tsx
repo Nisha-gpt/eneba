@@ -26,8 +26,14 @@ async function api<T>(path:string, body?:unknown, signal?:AbortSignal):Promise<T
     signal,
     ...(body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
   });
-  const data = await response.json();
-  if (!response.ok) throw new RequestError(data.error || 'Request failed.',response.status);
+  const media = response.headers.get('Content-Type')?.split(';', 1)[0].trim();
+  if (media !== 'application/json') {
+    throw new RequestError('The store is temporarily unavailable. Please try again.', response.status);
+  }
+  const data = await response.json().catch(() => {
+    throw new RequestError('The store returned an unreadable response. Please try again.', response.status);
+  });
+  if (!response.ok) throw new RequestError(data?.error || 'Request failed.', response.status);
   return data as T;
 }
 
@@ -303,7 +309,7 @@ function OrderPage() {
 
 function Protected({children}:{children:ReactNode}) {
   const {user,sessionError}=useMarket();
-  if (sessionError) return <ErrorText message={sessionError}/>;
+  if (sessionError) return <><ErrorText message={sessionError}/><Empty title="Sign in to view your orders"><Link className="button primary" to="/login">Sign in</Link></Empty></>;
   if (user===undefined) return <Loading/>;
   if (!user) return <Empty title="Sign in to view your orders"><Link className="button primary" to="/login">Sign in</Link></Empty>;
   return children;
@@ -311,11 +317,23 @@ function Protected({children}:{children:ReactNode}) {
 
 function App() {
   const [cart,updateCart]=useState(()=>saved<Item[]>('keyshift.cart',[]));
-  const [user,setUser]=useState<User|null>();
-  const [sessionError,setSessionError]=useState('');
+  const [session,setSession]=useState<{user?:User|null; error:string}>({error:''});
+  const {user,error:sessionError}=session;
+  function setUser(next:User|null) {
+    setSession({user:next,error:''});
+  }
   const [toast,setToast]=useState('');
   const {pathname}=useLocation();
-  useEffect(()=>{api<User|null>('/session').then(setUser).catch(e=>setSessionError(e.message));},[]);
+  useEffect(() => {
+    const request = new AbortController();
+    function finish(next:typeof session) {
+      if (!request.signal.aborted) setSession(current => current.user === undefined ? next : current);
+    }
+    api<User|null>('/session', undefined, request.signal)
+      .then(user => finish({user,error:''}))
+      .catch(error => finish({user:null,error:error.message}));
+    return () => request.abort();
+  }, []);
   useEffect(()=>{window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
   function setCart(items:Item[]) {localStorage.setItem('keyshift.cart',JSON.stringify(items));updateCart(items);}

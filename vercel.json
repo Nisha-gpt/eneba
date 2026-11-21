@@ -9,8 +9,10 @@
     "web": {
       "root": "web",
       "framework": "vite",
+      "outputDirectory": "dist",
       "routes": [
         { "handle": "filesystem" },
+        { "src": "/(assets|art)(/.*)?", "status": 404 },
         { "src": "/.*", "dest": "/index.html" }
       ]
     }
