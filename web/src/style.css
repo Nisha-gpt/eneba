@@ -166,3 +166,67 @@ input[aria-invalid=true]{border-color:#ed8fa8}
   .receipt-item img{width:46px}
   .key-entry{grid-template-columns:1fr}
 }
+
+/* Marketplace reference palette and page layout. */
+:root{
+  --bg:#4318a7;--surface:#241052;--raised:#321572;--text:#fff;
+  --muted:#d3c7e8;--border:#795db4;--accent:#fadc26;--violet:#dfccff;
+  --heading:'DM Sans Variable',system-ui,sans-serif;
+}
+.button,.filters,.summary,.form-panel,.key-card,.offer,.cart-row,.payment-panel{border-radius:3px}
+.primary{background:var(--accent);color:#1e1040}
+.primary:hover:not(:disabled){background:#ffeb63}
+.secondary{background:transparent;border-color:#bcaade}
+.site-header{background:#4318a7;border:0}
+.nav{grid-template-columns:auto minmax(0,1fr) auto;min-height:76px;gap:18px}
+.brand{font-size:2rem;font-weight:900;letter-spacing:-.065em}
+.brand>span:last-child{color:#fff;margin:0}
+.eneba-mark{width:34px;height:34px;position:relative;display:inline-block;flex:none}
+.eneba-mark i{position:absolute;left:10%;top:9%;width:62%;height:45%;border-radius:72% 48% 62% 24%;transform-origin:65% 95%;background:#ffbc42;transform:rotate(-20deg)}
+.eneba-mark i:nth-child(2){background:#f43b86;transform:rotate(100deg)}
+.eneba-mark i:nth-child(3){background:#64e9b1;transform:rotate(220deg)}
+.search{background:transparent;border-color:#bca6e3;border-radius:0;max-width:560px;color:#f4eaff}
+.search input::placeholder{color:#d2bce9}
+.search button{background:transparent;color:#fff}
+.bag{border:0;padding:5px}
+.market-nav{background:#32127c}
+.market-nav nav{display:flex;align-items:center;gap:26px;min-height:38px;overflow:auto;scrollbar-width:none;white-space:nowrap}
+.market-nav a:hover,.home-platforms a:hover{color:var(--accent)}
+.hero{width:min(1800px,92vw);margin:0 calc((100% - min(1800px,92vw))/2) 0;border:0;border-radius:0;min-height:clamp(270px,18.4vw,375px)}
+.hero-content{padding:34px 38px}
+.hero h1{font-weight:900;letter-spacing:-.055em}
+.hero-down{display:none}
+.home-platforms{display:flex;justify-content:center;gap:32px;padding:22px 0;overflow:auto;scrollbar-width:none}
+.home-platforms a{display:grid;justify-items:center;gap:5px;flex:none;font-size:.8rem;font-weight:700}
+.collection{padding:18px 0 28px;margin:0}
+.collection+.collection{background:#32127c;box-shadow:0 0 0 100vmax #32127c;clip-path:inset(0 -100vmax)}
+.card{border:1px solid #65c8c4;border-radius:0}
+.poster{aspect-ratio:.79}
+.tag{inset:auto 0 0;border:0;border-radius:0;text-align:center;background:#1a1035e8;padding:5px}
+.card h3{margin:0 0 7px;letter-spacing:0}
+.card-bottom{padding-top:7px}
+.card-arrow{color:#fff;background:transparent;border:1px solid #bcaade;border-radius:0}
+.region{color:#ffabc0}
+.region[data-global=true]{color:#68e0c9}
+.inner .section-kicker{color:#e7d8ff}
+select,input:not(.search input),.payment-help,.key-panel{background:#1e103f}
+.toast{background:#241052}
+.receipt-check{background:#185e59;color:#a4fbea}
+footer{background:#170a34;border-color:#6a479e}
+@media(max-width:720px){
+  .nav{grid-template-columns:auto 1fr;gap:9px;min-height:60px}
+  .nav .search{grid-column:1/-1}
+  .brand{font-size:1.6rem}
+  .eneba-mark{height:30px;width:30px}
+  .market-nav nav{gap:17px;font-size:.86rem}
+  .hero{width:100vw;margin-inline:calc((100% - 100vw)/2);min-height:245px}
+  .hero-content{padding:18px}
+  .home-platforms{justify-content:start;gap:23px;padding:16px 0}
+  .collection{padding-top:12px}
+  .grid,.store-grid{grid-template-columns:1fr}
+  .card{display:grid;grid-template-columns: minmax(76px,29%) minmax(0,1fr);padding:8px;gap:8px}
+  .card .poster{aspect-ratio:.86}
+  .card-body{padding:2px 0}
+  .card-bottom{padding-top:5px}
+  .card h3{margin-bottom:4px}
+}

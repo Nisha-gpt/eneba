@@ -1,6 +1,6 @@
-# Keyshift
+# Eneba internship marketplace recreation
 
-A game-key marketplace built for the Eneba internship assignment. Browse the catalog, compare seller offers, and complete a simulated purchase. The prices, sellers, and `DEMO-` keys are sample data. The original, marketplace-inspired interface uses a responsive purple palette, a global search bar, and artwork-led product cards.
+An unofficial recreation for the Eneba internship assignment. The design follows supplied Eneba references. The catalog, seller offers and artwork are demonstration data, and purchases use simulated payments and non-redeemable keys.
 
 ## Run locally
 

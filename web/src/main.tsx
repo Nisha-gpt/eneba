@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, createContext, useContext } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingBag, SlidersHorizontal, Zap } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Gamepad2 as ConsoleIcon } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
 import '@fontsource-variable/space-grotesk';
 import './style.css';
@@ -66,6 +66,21 @@ function Breadcrumb({children}:{children:ReactNode}) {
   return <div className="crumb"><Link to="/">Home</Link><span>/</span>{children}</div>;
 }
 
+function Brand() {
+  return <Link to="/" className="brand" aria-label="Eneba home">
+    <span className="eneba-mark" aria-hidden="true"><i/><i/><i/></span><span>eneba</span>
+  </Link>;
+}
+
+const marketplaceLinks = [
+  {name:'Games',path:'/store',icon:Gamepad2},
+  {name:'Cheap Games',path:'/store?sort=price-asc',icon:Gamepad2},
+  {name:'Steam',path:'/store?platform=Steam',icon:Monitor},
+  {name:'PlayStation',path:'/store?platform=PlayStation',icon:Gamepad},
+  {name:'Xbox',path:'/store?platform=Xbox',icon:ConsoleIcon},
+  {name:'Nintendo',path:'/store?platform=Nintendo',icon:Joystick},
+];
+
 function Header() {
   const {cart,user} = useMarket();
   const navigate = useNavigate();
@@ -81,17 +96,17 @@ function Header() {
   }
   return <header className="site-header">
     <div className="wrap nav">
-      <Link className="brand" to="/" aria-label="Keyshift home"><span className="mark"><Zap size={20} fill="currentColor"/></span>keyshift<span>.</span></Link>
-      <Link className="store-nav" to="/store">Store</Link>
+      <Brand/>
       <form className="search" onSubmit={submit} role="search">
         <Search size={19}/><input aria-label="Search games" placeholder="Search games, platforms and more" value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
         <button aria-label="Submit search"><ArrowRight size={17}/></button>
       </form>
       <div className="utilities">
         <Link to={user ? '/orders' : '/login'} aria-label={user ? 'Your orders' : 'Sign in'}><CircleUserRound size={22}/><span>{user ? 'Orders' : 'Sign in'}</span></Link>
-        <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingBag size={20}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
+        <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingCart size={20}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
       </div>
     </div>
+    <div className="market-nav"><nav className="wrap" aria-label="Marketplace">{marketplaceLinks.map(link=><Link key={link.path} to={link.path}>{link.name}</Link>)}</nav></div>
   </header>;
 }
 
@@ -102,7 +117,7 @@ function Card({product}:{product:Product}) {
       <img src={product.artwork} alt="" loading="lazy" onError={e=>e.currentTarget.hidden=true}/>
       <span className="tag">{product.platform}</span>
     </div>
-    <div className="card-body"><div className="eyebrow region">{product.region}</div><h3>{product.name}</h3>
+    <div className="card-body"><h3>{product.name}</h3><div className="eyebrow region" data-global={product.region==='Global'}>{product.region}</div>
       <div className="card-bottom"><div>{product.cents === null ? <span>Out of stock</span> : <><small>From</small><strong>{money(product.cents)}</strong></>}</div><span className="card-arrow"><ArrowUpRight size={17}/></span></div>
     </div>
   </Link>;
@@ -112,7 +127,7 @@ function Collection({path}:{path:string}) {
   const {data,error} = useData<{title:string;label:string;browse_path:string;items:Product[]}>('/home/'+path);
   return <section className="collection">
     {error ? <ErrorText message={error}/> : !data ? <Loading/> : <>
-      <div className="section-heading"><div><div className="eyebrow section-kicker">{data.label}</div><h2>{data.title}</h2></div><Link to={data.browse_path}>Browse store <ArrowUpRight size={17}/></Link></div>
+      <div className="section-heading"><div><h2>{data.title}</h2></div><Link to={data.browse_path}>Browse store <ArrowUpRight size={17}/></Link></div>
       {data.items.length ? <div className="grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products in this collection"/>}
     </>}
   </section>;
@@ -129,12 +144,11 @@ function Home() {
           <h1>{data.headline}</h1><p>{data.subtitle}</p>
           <Link className="button primary" to={data.destination}>{data.action}<ArrowRight size={19}/></Link>
         </div>
-        <a className="hero-down" href="#market" aria-label="Scroll to games"><ArrowDown size={19}/></a>
       </>}
     </section>
-    <div className="benefits" id="market">
-      <span><ShieldCheck size={19}/>Compare seller offers</span><span><Zap size={18}/>Instant demo key delivery</span><span><Gamepad2 size={20}/>Games across platforms</span>
-    </div>
+    <nav className="home-platforms" id="market" aria-label="Browse games by platform">
+      {marketplaceLinks.filter(link=>link.name!=='Cheap Games').map(link=><Link key={link.path} to={link.path}><link.icon size={24}/>{link.name}</Link>)}
+    </nav>
     <Collection path="bestsellers"/>
     <Collection path="deals"/>
   </>;
@@ -224,7 +238,7 @@ function Auth() {
       <label>Password<input type="password" name="password" required minLength={8} maxLength={72} autoComplete={register?'new-password':'current-password'}/></label>
       <button className="button primary" disabled={busy}>{busy?'Please wait…':register?'Create account':'Sign in'}</button>
     </form>
-    <p>{register?'Already registered?':'New to Keyshift?'} <Link to={(register?'/login':'/register')+(next==='/orders'?'':'?next='+next.slice(1))}>{register?'Sign in':'Create an account'}</Link></p>
+    <p>{register?'Already registered?':'New to Eneba?'} <Link to={(register?'/login':'/register')+(next==='/orders'?'':'?next='+next.slice(1))}>{register?'Sign in':'Create an account'}</Link></p>
   </section>;
 }
 
@@ -484,8 +498,8 @@ function App() {
       <Route path="/orders" element={<Protected><Orders/></Protected>}/><Route path="/orders/:id" element={<Protected><OrderPage/></Protected>}/>
       <Route path="*" element={<Empty title="Page not found"><Link to="/">Return home</Link></Empty>}/>
     </Routes></main>
-    <footer><div className="wrap footer-inner"><Link to="/" className="brand"><span className="mark"><Zap size={18} fill="currentColor"/></span>keyshift<span>.</span></Link><p>Internship demo · Simulated payments and demo keys</p><Link to="/store">Store <ArrowUpRight size={15}/></Link></div></footer>
-    {toast && <div className="toast" role="status"><ShoppingBag size={17}/>{toast} <Link to="/cart">View cart</Link></div>}
+    <footer><div className="wrap footer-inner"><Brand/><p>Unofficial Eneba internship recreation · Simulated payments</p><Link to="/store">Store <ArrowUpRight size={15}/></Link></div></footer>
+    {toast && <div className="toast" role="status"><ShoppingCart size={17}/>{toast} <Link to="/cart">View cart</Link></div>}
   </MarketContext.Provider>;
 }
 
