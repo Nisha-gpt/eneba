@@ -1,21 +1,84 @@
-import { useEffect, useState, useRef, createContext, useContext } from 'react';
+import { useEffect, useMemo, useState, useRef, createContext, useContext } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift, Star, Wallet, CreditCard, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift, Star, Wallet, CreditCard, Trash2, Swords, Compass, Target, Flag, Flame } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
 import '@fontsource-variable/space-grotesk';
 import './style.css';
 
-type Product = {id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; attributes:Record<string,string>; cents:number|null};
+type Product = {featured_offer?:{id:number;cents:number;seller:string;stock?:number}|null;id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; attributes:Record<string,string>; cents:number|null};
+type CardProduct = Pick<Product,'id'|'slug'|'name'|'platform'|'region'|'artwork'|'attributes'|'cents'|'featured_offer'>;
 type Offer = {id:number; seller:string; cents:number; stock:number};
 type Item = {offer:number; quantity:number; name:string; seller:string; cents:number; slug:string};
 type User = {email:string};
 type Order = {id:number; cents:number; created_at:string};
 type OrderDetail = Order & {payment_method:'card'|'wallet'; delivery_email:string|null; items:{id:number; product:string; seller:string; cents:number; quantity:number; keys:string[]; artwork:string; platform:string; region:string; activation:string}[]};
-type Banner = {eyebrow:string; headline:string; subtitle:string; action:string; destination:string; artwork:string};
+type Banner = {campaigns:{title:string;subtitle:string;destination:string;artwork:string}[];mobile_artwork?:string;eyebrow:string; headline:string; subtitle:string; action:string; destination:string; artwork:string};
 
-const money = (cents:number) => new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(cents/100);
+type Preferences={country:string;language:'en'|'es';currency:'EUR'|'USD'|'GBP'};
+const defaultPreferences:Preferences={country:'India',language:'en',currency:'EUR'};
+const currencyRates={EUR:1,USD:1.10,GBP:0.85};
+const countries:Record<string,string>={India:'Asia',Germany:'Europe',France:'Europe','United Kingdom':'Europe','United States':'North America',Canada:'North America',Spain:'Europe'};
+const translations:Record<string,string>={
+  'Update your settings':'Actualiza tus preferencias',Region:'Región',Language:'Idioma',Currency:'Moneda',Close:'Cerrar',Cancel:'Cancelar',Save:'Guardar',
+  'Settings saved.':'Preferencias guardadas.',Categories:'Categorías',Games:'Juegos','Cheap Games':'Juegos baratos',Software:'Software','Gift Guide':'Guía de regalos',
+  'eGift Cards':'Tarjetas regalo digitales','Eneba Gift Cards':'Tarjetas regalo de Eneba','Recently viewed':'Vistos recientemente','Recommended for you':'Recomendados para ti',
+  'Top games':'Juegos destacados','Best selling eGift Cards':'Tarjetas digitales más vendidas','Best selling gift cards':'Tarjetas regalo más vendidas',
+  'Upcoming games':'Próximos juegos','Load more':'Cargar más','Show all':'Ver todo','Add to cart':'Añadir al carrito','View offers':'Ver ofertas',
+  'Log in':'Iniciar sesión',Register:'Registrarse',Orders:'Pedidos',Cart:'Carrito',Payment:'Pago','Get your product':'Recibe tu producto',
+  'Search for games, top-ups and more':'Busca juegos, recargas y más','Payment successful':'Pago realizado','Proceed to checkout':'Continuar con el pago',
+  'My cart':'Mi carrito','Order summary':'Resumen del pedido',Total:'Total','Service fee':'Comisión de servicio',
+  'How would you like to pay?':'¿Cómo quieres pagar?','Credit or debit card':'Tarjeta de crédito o débito',
+  'Pay with your Eneba wallet balance.':'Paga con el saldo de tu cartera Eneba.','Pay with Visa or Mastercard.':'Paga con Visa o Mastercard.',
+  'Test mode — no real charges':'Modo de prueba — sin cargos reales','Test payment details':'Datos de pago de prueba',
+  'Delivery email':'Correo de entrega','Where to deliver the order?':'¿Dónde quieres recibir el pedido?',Edit:'Editar',Summary:'Resumen',
+  Subtotal:'Subtotal','Back to cart':'Volver al carrito','Cardholder name':'Titular de la tarjeta','Card number':'Número de tarjeta','Expiry date':'Caducidad',
+  Pay:'Pagar','Processing…':'Procesando…','View orders':'Ver pedidos','Continue shopping':'Seguir comprando',
+};
+
+function activationEligibility(region:string,country:string|undefined,selected:string) {
+  if(region==='Global') return `Can be activated in ${selected}.`;
+  if(country && country!=='Worldwide' && !Object.values(countries).includes(country)) {
+    if(country in countries) return country===selected?`Can be activated in ${selected}.`:`This offer is for ${country}; it cannot be activated in ${selected}.`;
+  }
+  return countries[selected]===region||selected===region
+    ? `Can be activated in ${selected}.`
+    : `This offer is restricted to ${region}; it cannot be activated in ${selected}.`;
+}
+
+function SettingsControl() {
+  const {preferences,openSettings}=useMarket();
+  return <button type="button" className="settings-control" onClick={openSettings} aria-haspopup="dialog" aria-label="Language and currency">
+    <Globe size={17}/><span>{preferences.language==='es'?'Español':'English'} · {preferences.currency}</span>
+  </button>;
+}
+
+function SettingsDialog({onClose,onSave,preferences}:{onClose:()=>void;onSave:(value:Preferences)=>void;preferences:Preferences}) {
+  const ref=useRef<HTMLDialogElement>(null);
+  const [draft,setDraft]=useState(preferences);
+  const t=(text:string)=>preferences.language==='es'?translations[text]??text:text;
+  useEffect(()=>{
+    const dialog=ref.current!;
+    const trigger=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    const overflow=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    dialog.showModal();
+    return ()=>{dialog.close();document.body.style.overflow=overflow;trigger?.focus();};
+  },[]);
+  return <dialog className="settings-dialog" ref={ref} aria-labelledby="settings-title"
+    onCancel={event=>{event.preventDefault();onClose();}}
+    onClick={event=>{if(event.target===event.currentTarget) onClose();}}>
+    <form onSubmit={event=>{event.preventDefault();onSave(draft);}}>
+      <div className="settings-head"><h2 id="settings-title">{t('Update your settings')}</h2><button type="button" aria-label={t('Close')} onClick={onClose}><X size={20}/></button></div>
+      <label>{t('Region')}<select value={draft.country} onChange={e=>setDraft({...draft,country:e.target.value})}>{Object.keys(countries).map(country=><option key={country}>{country}</option>)}</select></label>
+      <label>{t('Language')}<select value={draft.language} onChange={e=>setDraft({...draft,language:e.target.value as Preferences['language']})}><option value="en">English</option><option value="es">Español</option></select></label>
+      <label>{t('Currency')}<select value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value as Preferences['currency']})}>{Object.keys(currencyRates).map(currency=><option key={currency}>{currency}</option>)}</select></label>
+      <small>Currency equivalents use fixed demo rates. Orders and wallet balances are recorded in EUR.</small>
+      <div className="actions"><button type="button" className="button secondary" onClick={onClose}>{t('Cancel')}</button><button className="button primary">{t('Save')}</button></div>
+    </form>
+  </dialog>;
+}
 
 class RequestError extends Error {
   constructor(message:string, readonly status:number) { super(message); }
@@ -54,7 +117,7 @@ function saved<T>(key:string, fallback:T):T {
   catch { return fallback; }
 }
 
-type Market = {deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
+type Market = {preferences:Preferences;t:(text:string)=>string;money:(cents:number)=>string;openSettings:()=>void;navigation:{data?:Category[];error?:string};history:string[];recordView:(slug:string)=>void;deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
 const MarketContext = createContext<Market>(null!);
 const useMarket = () => useContext(MarketContext);
 const ErrorText = ({message}:{message:string}) => <p className="feedback error" role="alert">{message}</p>;
@@ -133,13 +196,12 @@ const marketplaceLinks = [
 ];
 
 function Header() {
-  const {cart,user,wishlist} = useMarket();
+  const {cart,user,wishlist,navigation,t} = useMarket();
   const navigate = useNavigate();
   const {pathname,search} = useLocation();
   const query = pathname.startsWith('/store') ? new URLSearchParams(search).get('q') ?? '' : '';
   const [value,setValue] = useState(query);
   const [drawer,setDrawer]=useState(false);
-  const navigation=useData<Category[]>('/navigation');
   const links=(navigation.data??[]).filter(c=>c.nav_rank!==null).sort((a,b)=>a.nav_rank!-b.nav_rank!);
   useEffect(() => setValue(query),[query,pathname]);
   useEffect(()=>setDrawer(false),[pathname,search]);
@@ -153,29 +215,27 @@ function Header() {
     <div className="wrap nav">
       <Brand/>
       <form className="search" onSubmit={submit} role="search">
-        <Search size={22}/><input aria-label="Search games" placeholder="Search for games, top-ups and more" value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
+        <Search size={22}/><input aria-label="Search games" placeholder={t('Search for games, top-ups and more')} value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
         <button aria-label="Submit search"><ArrowRight size={17}/></button>
       </form>
       <div className="utilities">
-        <details className="locale-control"><summary aria-label="Language and currency"><Globe size={18}/><span>English | EUR</span></summary>
-          <div><strong>English · EUR</strong><p>The storefront is available in English. Purchases are quoted in EUR.</p></div>
-        </details>
+        <SettingsControl/>
         <Link className="icon-link" to="/wishlist" aria-label={`Wishlist, ${wishlist.length} items`}><Heart size={22}/>{wishlist.length>0&&<b>{wishlist.length}</b>}</Link>
         <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingCart size={22}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
-        <Link to={user ? '/orders' : '/login'} aria-label={user ? 'Your orders' : 'Sign in'}><CircleUserRound size={22}/><span>{user ? 'Orders' : 'Log in'}</span></Link>
-        {!user&&<Link className="register-nav" to="/register">Register</Link>}
+        <Link to={user ? '/orders' : '/login'} aria-label={user ? 'Your orders' : 'Sign in'}><CircleUserRound size={22}/><span>{t(user ? 'Orders' : 'Log in')}</span></Link>
+        {!user&&<Link className="register-nav" to="/register">{t('Register')}</Link>}
       </div>
     </div>
     <div className="market-nav"><nav className="wrap" aria-label="Marketplace">
-      <button onClick={()=>setDrawer(true)} aria-haspopup="dialog" aria-expanded={drawer}><Menu size={20}/> Categories</button>
-      {links.map(c=><NavLink key={c.slug} to={categoryPath(c.slug)}>{c.name}</NavLink>)}
+      <button onClick={()=>setDrawer(true)} aria-haspopup="dialog" aria-expanded={drawer}><Menu size={20}/> {t('Categories')}</button>
+      {links.map(c=><NavLink key={c.slug} to={categoryPath(c.slug)}>{t(c.name)}</NavLink>)}
       {navigation.data?.some(c=>c.slug==='gift-guide')&&<NavLink to="/store/gift-guide">Gift Guide</NavLink>}
     </nav></div>
     {drawer&&<CategoryDrawer categories={navigation.data??[]} error={navigation.error} onClose={()=>setDrawer(false)}/>}
   </header>;
 }
 
-function ProductArtwork({product}:{product:Product}) {
+function ProductArtwork({product}:{product:Pick<CardProduct,'artwork'|'attributes'|'platform'>}) {
   if(product.artwork) return <img src={product.artwork} alt="" loading="lazy" onError={e=>e.currentTarget.hidden=true}/>;
   return <div className={'catalog-art art-'+(product.attributes.tone??'violet')} aria-hidden="true">
     <div>{product.attributes.type==='Software'?<Monitor size={40}/>:<Gift size={40}/>}<strong>{product.attributes.brand??product.platform}</strong>
@@ -183,10 +243,23 @@ function ProductArtwork({product}:{product:Product}) {
   </div>;
 }
 
-function Card({product}:{product:Product}) {
-  const {wishlist,toggleWishlist}=useMarket();
+function Card({product,actions=false}:{product:CardProduct;actions?:boolean}) {
+  const {money,wishlist,toggleWishlist,cart,setCart,notice,t}=useMarket();
+  const navigate=useNavigate();
+  const offer=product.featured_offer;
+  function add(){
+    if(!offer)return;
+    const previous=cart.find(item=>item.offer===offer.id);
+    if(previous&&previous.quantity>=Math.min(20,offer.stock??20)){
+      notice('You have reached the available quantity.');return;
+    }
+    if(!previous&&cart.length>=20){notice('Your cart can hold up to 20 offers.');return;}
+    const item={offer:offer.id,quantity:(previous?.quantity??0)+1,name:product.name,seller:offer.seller,cents:offer.cents,slug:product.slug};
+    setCart(previous?cart.map(line=>line.offer===item.offer?item:line):[...cart,item]);
+    navigate('/cart');
+  }
   const saved=wishlist.includes(product.slug);
-  return <article className="card-shell">
+  return <article className={'card-shell'+(actions?' carousel-card':'')}>
     <Link className="card" to={'/product/'+product.slug}>
       <div className={'poster tone-'+product.id%6}>
         <span className="poster-fallback" aria-hidden="true">{product.name}</span>
@@ -197,6 +270,10 @@ function Card({product}:{product:Product}) {
         <div className="card-bottom"><div>{product.cents === null ? <span>Out of stock</span> : <><small>From</small><strong>{money(product.cents)}</strong></>}</div></div>
       </div>
     </Link>
+    {actions&&<div className="carousel-card-actions">
+      <button className="button primary" disabled={!offer} onClick={add}>{t('Add to cart')}</button>
+      <Link className="button secondary" to={'/product/'+product.slug+'#seller-offers'}>{t('View offers')}</Link>
+    </div>}
     <button className="wishlist-toggle" aria-label={`${saved?'Remove':'Save'} ${product.name} ${saved?'from':'to'} wishlist`} aria-pressed={saved} onClick={()=>toggleWishlist(product.slug)}><Heart size={18} fill={saved?'currentColor':'none'}/></button>
   </article>;
 }
@@ -216,43 +293,140 @@ function Wishlist() {
     : <Empty title="Your wishlist is empty"><Link className="button primary" to="/store">Browse all offers</Link></Empty>}</div>;
 }
 
-function Collection({path}:{path:string}) {
-  const {data,error} = useData<{title:string;label:string;browse_path:string;items:Product[]}>('/home/'+path);
-  return <section className="collection">
-    {error ? <ErrorText message={error}/> : !data ? <Loading/> : <>
-      <div className="section-heading"><div><h2>{data.title}</h2></div><Link to={data.browse_path}>Browse store <ArrowUpRight size={17}/></Link></div>
-      {data.items.length ? <div className="grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products in this collection"/>}
+function Carousel({children,label,kind='products'}:{children:ReactNode;label:string;kind?:'products'|'shortcuts'|'brands'}) {
+  const ref=useRef<HTMLDivElement>(null);
+  const [position,setPosition]=useState({left:false,right:false});
+  function update(){
+    const row=ref.current;
+    if (!row) return;
+    const next={left:row.scrollLeft>2,right:row.scrollLeft+row.clientWidth+2<row.scrollWidth};
+    setPosition(old=>old.left===next.left&&old.right===next.right?old:next);
+  }
+  useEffect(()=>{
+    const row=ref.current;
+    if(!row)return;
+    const observer=new ResizeObserver(update);
+    observer.observe(row);
+    for(const child of row.children) observer.observe(child);
+    update();
+    return ()=>observer.disconnect();
+  },[children]);
+  function move(direction:number) {
+    const row=ref.current;
+    if(row) row.scrollBy({left:direction*row.clientWidth*.82,behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+  }
+  return <div className={'carousel carousel-'+kind}>
+    <div className="carousel-track" ref={ref} aria-label={label} tabIndex={position.left||position.right?0:undefined} onScroll={update}>{children}</div>
+    {position.left&&<button className="carousel-arrow previous" aria-label={'Previous '+label} onClick={()=>move(-1)}><ChevronLeft size={20}/></button>}
+    {position.right&&<button className="carousel-arrow next" aria-label={'Next '+label} onClick={()=>move(1)}><ChevronRight size={20}/></button>}
+  </div>;
+}
+
+function Collection({path,background=false}:{path:string;background?:boolean}) {
+  const {t}=useMarket();
+  const {data,error}=useData<{title:string;label:string;browse_path:string;items:CardProduct[]}>('/home/'+path);
+  return <section className={'home-band'+(background?' home-band-deep':'')}>
+    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+      <h2>{t(data.title)}</h2>
+      {data.items.length?<Carousel label={t(data.title)}>{data.items.map(p=><Card key={p.id} product={p} actions/>)}</Carousel>:<p>No products in this collection.</p>}
+      <div className="home-show-all"><Link className="button secondary" to={data.browse_path}>{t('Show all')}</Link></div>
+    </>}
+  </section>;
+}
+
+function RecentlyViewed({history}:{history:string[]}) {
+  const {t}=useMarket();
+  const query=new URLSearchParams(history.map(slug=>['slug',slug]));
+  const {data,error}=useData<CardProduct[]>('/home/recent?'+query);
+  return <section className="home-band">
+    <h2>{t('Recently viewed')}</h2>
+    {error?<ErrorText message={error}/>:!data?<Loading/>:data.length
+      ?<Carousel label={t('Recently viewed')}>{data.map(p=><Card key={p.id} product={p} actions/>)}</Carousel>
+      :<p>No recently viewed products yet.</p>}
+  </section>;
+}
+
+function GiftBrands() {
+  const {t}=useMarket();
+  const {data,error}=useData<{name:string;tone:string}[]>('/home/gift-brands');
+  const label=t('Best selling eGift Cards');
+  return <section className="home-band">
+    <h2>{label}</h2>
+    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+      <Carousel label={label} kind="brands">{data.map(brand=><Link key={brand.name} className={'brand-tile art-'+brand.tone}
+        to={'/store/e-gift-cards?'+new URLSearchParams({brand:brand.name})}><Gift size={33}/><strong>{brand.name}</strong></Link>)}</Carousel>
+      <div className="home-show-all"><Link className="button secondary" to="/store/e-gift-cards">{t('Show all')}</Link></div>
+    </>}
+  </section>;
+}
+
+const genreIcons:Record<string,typeof Gamepad2>={
+  Action:Swords,'Action RPG':Swords,Adventure:Compass,Exploration:Compass,Simulation:Gamepad,
+  Strategy:Target,Racing:Flag,'Role Playing':ShieldCheck,Puzzle:Gamepad2,Survival:Flame,
+};
+function HomepageGenres() {
+  const {data,error}=useData<{name:string;count:number}[]>('/home/genres');
+  const {t}=useMarket();
+  const [limit,setLimit]=useState(7);
+  return <section className="home-band home-genres">
+    <h2>{t('Categories')}</h2>
+    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+      <div className="genre-tiles">{data.slice(0,limit).map(genre=>{
+        const Icon=genreIcons[genre.name]??Gamepad2;
+        return <Link key={genre.name} to={'/store/games?'+new URLSearchParams({genre:genre.name})}>
+          <strong>{genre.count}</strong><Icon size={33}/><span>{genre.name}</span>
+        </Link>;
+      })}</div>
+      {limit<data.length&&<div className="home-show-all"><button className="button secondary" onClick={()=>setLimit(limit+7)}>{t('Load more')}</button></div>}
     </>}
   </section>;
 }
 
 function Home() {
   const {data,error}=useData<Banner>('/home/banner');
+  const {history,navigation,t}=useMarket();
+  const shortcuts=(navigation.data??[]).filter(c=>!c.parent||['steam','eneba-gift-cards'].includes(c.slug)).filter(c=>c.slug!=='cheap-games');
   return <>
-    <section className="hero">
-      {error ? <ErrorText message={error}/> : !data ? <Loading/> : <>
-        <img className="hero-art" src={data.artwork} alt="" fetchPriority="high" onError={e=>e.currentTarget.hidden=true}/>
-        <div className="hero-content">
-          <div className="eyebrow hero-tag"><span/>{data.eyebrow}</div>
-          <h1>{data.headline}</h1><p>{data.subtitle}</p>
-          <Link className="button primary" to={data.destination}>{data.action}<ArrowRight size={19}/></Link>
-        </div>
-      </>}
-    </section>
-    <nav className="home-platforms" id="market" aria-label="Browse games by platform">
-      {marketplaceLinks.filter(link=>link.name!=='Cheap Games').map(link=><Link key={link.path} to={link.path}><link.icon size={24}/>{link.name}</Link>)}
-    </nav>
-    <Collection path="bestsellers"/>
-    <Collection path="deals"/>
+    <div className="campaign-strip">
+      <section className="hero">
+        {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+          <picture>{data.mobile_artwork&&<source media="(max-width: 720px)" srcSet={data.mobile_artwork}/>}<img className="hero-art" src={data.artwork} alt="" fetchPriority="high" onError={e=>e.currentTarget.hidden=true}/></picture>
+          <div className="hero-content">
+            <div className="eyebrow hero-tag"><span/>{data.eyebrow}</div>
+            <h1>{data.headline}</h1><p>{data.subtitle}</p>
+            <Link className="button primary" to={data.destination}>{data.action}<ArrowRight size={19}/></Link>
+          </div>
+        </>}
+      </section>
+      {data?.campaigns.map((campaign,index)=><Link key={campaign.destination} className={'campaign-tile campaign-'+index} to={campaign.destination}>
+        {campaign.artwork?<img src={campaign.artwork} alt="" loading="lazy"/>:index===1?<Gift className="campaign-decoration" size={72}/>:<Monitor className="campaign-decoration" size={72}/>}
+        <span><strong>{campaign.title}</strong><small>{campaign.subtitle}</small></span>
+      </Link>)}
+    </div>
+    <div className="home-shortcuts" id="market">
+    {navigation.error?<ErrorText message={navigation.error}/>:navigation.data?
+      <Carousel label="Category shortcuts" kind="shortcuts">{shortcuts.map(category=>{
+        const Icon=marketplaceLinks.find(link=>link.path===categoryPath(category.slug))?.icon??Gamepad2;
+        return <Link key={category.slug} to={categoryPath(category.slug)}><Icon size={26}/>{t(category.name)}</Link>;
+      })}</Carousel>:<Loading/>}
+    </div>
+    {history.length>0&&<RecentlyViewed history={history}/>}
+    <Collection path="recommended"/>
+    <Collection path="top-games" background/>
+    <GiftBrands/>
+    <Collection path="gift-cards" background/>
+    <Collection path="upcoming"/>
+    <Collection path="deals" background/>
+    <HomepageGenres/>
   </>;
 }
 
 const filterNames:Record<string,string> = {
   country:'Country',type:'Type',os:'Operating system',platform:'Platforms',
-  brand:'Brand',region:'Region',currency:'Currency',denomination:'Denomination',
+  brand:'Brand',region:'Region',currency:'Currency',denomination:'Denomination',genre:'Genre',
 };
 type FacetOption={value:string;count:number};
-type Listing={items:Product[];total:number;pageSize:number;category:Category|null;facets:Record<string,FacetOption[]>};
+type Listing={items:Product[];total:number;pageSize:number;category:Category|null;collection?:string|null;facets:Record<string,FacetOption[]>};
 
 function Facet({name,options,selected,change}:{name:string;options:FacetOption[];selected:string[];change:(value:string)=>void}) {
   const [search,setSearch]=useState('');
@@ -268,6 +442,8 @@ function Facet({name,options,selected,change}:{name:string;options:FacetOption[]
 }
 
 function PriceRange({min,max,onApply}:{min:string;max:string;onApply:(min:string,max:string)=>void}) {
+  const {preferences,money}=useMarket();
+  const rate=currencyRates[preferences.currency];
   const [error,setError]=useState('');
   function apply(event:FormEvent<HTMLFormElement>){
     event.preventDefault();
@@ -277,18 +453,18 @@ function PriceRange({min,max,onApply}:{min:string;max:string;onApply:(min:string
       setError('Enter a price with up to two decimals.');
       return;
     }
-    const [low,high]=limits.map(value=>value?String(Math.round(Number(value.replace(',','.'))*100)):'');
-    if((high&&Number(low)>Number(high))||limits.some(value=>Number(value.replace(',','.'))>10000)){
-      setError('Enter a valid range up to €10,000.');
+    const [low,high]=limits.map(value=>value?String(Math.round(Number(value.replace(',','.'))*100/rate)):'');
+    if((high&&Number(low)>Number(high))||[low,high].some(value=>Number(value)>1000000)){
+      setError('Enter a valid range up to '+money(1000000)+'.');
       return;
     }
     onApply(low,high);
   }
   return <details className="facet price-range" open>
-    <summary>Price range (EUR)</summary>
+    <summary>Price range ({preferences.currency})</summary>
     <form onSubmit={apply}>
-      <div><input name="min" inputMode="decimal" aria-label="Minimum price" placeholder="Min" defaultValue={min?Number(min)/100:''}/>
-      <span>–</span><input name="max" inputMode="decimal" aria-label="Maximum price" placeholder="Max" defaultValue={max?Number(max)/100:''}/></div>
+      <div><input name="min" inputMode="decimal" aria-label="Minimum price" placeholder="Min" defaultValue={min?(Number(min)*rate/100).toFixed(2):''}/>
+      <span>–</span><input name="max" inputMode="decimal" aria-label="Maximum price" placeholder="Max" defaultValue={max?(Number(max)*rate/100).toFixed(2):''}/></div>
       {error&&<ErrorText message={error}/>}
       <button className="button secondary">Apply price</button>
     </form>
@@ -296,6 +472,7 @@ function PriceRange({min,max,onApply}:{min:string;max:string;onApply:(min:string
 }
 
 function Store() {
+  const {money,preferences}=useMarket();
   const {category}=useParams();
   const [params,setParams] = useSearchParams();
   const [filterDrawer,setFilterDrawer]=useState(false);
@@ -332,7 +509,7 @@ function Store() {
     next.delete('page');setParams(next);
   }
   const filters=<>
-    <PriceRange key={min+':'+max} min={min} max={max} onApply={(low,high)=>{
+    <PriceRange key={preferences.currency+':'+min+':'+max} min={min} max={max} onApply={(low,high)=>{
       const next=new URLSearchParams(params);
       if(low) next.set('min',low);else next.delete('min');
       if(high) next.set('max',high);else next.delete('max');
@@ -342,7 +519,7 @@ function Store() {
       <Facet key={(category??'')+key} name={label} options={facets?.[key]??[]} selected={params.getAll(key)} change={value=>toggle(key,value)}/>)}
   </>;
   return <div className="inner catalog-page">
-    <h1>{query ? `Results for “${query}”` : data?.category?.heading ?? (category?'Browse category':'All offers')}</h1>
+    <h1>{query ? `Results for “${query}”` : data?.category?.heading ?? (data?.collection??(category?'Browse category':'All offers'))}</h1>
     <div className="store-layout">
       <aside className="filters catalog-filters" aria-label="Product filters">{filters}</aside>
       {filterDrawer&&<Drawer title="Filters" onClose={()=>setFilterDrawer(false)}><div className="catalog-filters">{filters}</div><button className="button primary show-results" onClick={()=>setFilterDrawer(false)}>Show results</button></Drawer>}
@@ -448,16 +625,18 @@ function ProductReviews({slug}:{slug:string}) {
 }
 
 function ProductPage() {
+  const {money}=useMarket();
   const {slug}=useParams();
   const {data,error}=useData<ProductDetail>('/products/'+encodeURIComponent(slug??''));
-  const {cart,setCart,notice,setQuickOrder}=useMarket();
+  const {cart,setCart,notice,setQuickOrder,recordView,preferences}=useMarket();
   const navigate=useNavigate();
   const [tab,setTab]=useState<'description'|'activation'>('description');
   useEffect(()=>setTab('description'),[slug]);
   useEffect(()=>{
     if(!data) return;
+    recordView(data.slug);
     document.title=data.name+' | Eneba internship marketplace recreation';
-    if(window.location.hash==='#reviews') document.getElementById('reviews')?.scrollIntoView();
+    if(['#reviews','#seller-offers'].includes(window.location.hash)) document.getElementById(window.location.hash.slice(1))?.scrollIntoView();
     return ()=>{document.title='Eneba — Internship marketplace recreation';};
   },[data]);
 
@@ -503,7 +682,7 @@ function ProductPage() {
           <h1>{data.name}</h1>
           <p className="product-byline">{[attrs.edition,data.platform,data.region].filter(Boolean).join(' · ')}</p>
           <dl className="product-facts">
-            <div><Globe size={19}/><dt>Activation region</dt><dd>{data.region==='Global'?'Global activation':`Use an account in ${attrs.country&&attrs.country!=='Worldwide' ? attrs.country : data.region}.`}</dd></div>
+            <div><Globe size={19}/><dt>Activation region</dt><dd>{activationEligibility(data.region,attrs.country,preferences.country)}</dd></div>
             <div><Gamepad2 size={19}/><dt>Platform</dt><dd>{data.platform}</dd></div>
             <div><KeyRound size={19}/><dt>Digital delivery</dt><dd>Test key available in your order after payment.</dd></div>
             {attrs.os && <div><Monitor size={19}/><dt>Operating system</dt><dd>{attrs.os}</dd></div>}
@@ -597,7 +776,7 @@ function Auth() {
   </section>;
 }
 
-type CheckoutQuote = {cents:number;serviceFeeCents:number;discountCents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number;artwork:string|null;platform:string|null;region:string|null}[]};
+type CheckoutQuote = {cents:number;serviceFeeCents:number;discountCents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number;artwork:string|null;platform:string|null;region:string|null;country:string|null}[]};
 type Scenario = 'test_card_approved' | 'test_card_declined' | 'test_wallet';
 type PendingPayment = {basket:string;scenario:Scenario;cents:number;id:string};
 type CardField = 'name' | 'number' | 'expiry' | 'cvc';
@@ -608,6 +787,7 @@ function digits(value:string, limit:number) {
 }
 
 function TestWallet({email,amount,switchToCard}:{email:string;amount:number|undefined;switchToCard:()=>void}) {
+  const {money}=useMarket();
   const {data,error}=useData<{cents:number;topUpCents:number}>('/wallet');
   const [funded,setFunded]=useState<{cents:number;topUpCents:number}>();
   const [busy,setBusy]=useState(false);
@@ -645,7 +825,8 @@ function TestWallet({email,amount,switchToCard}:{email:string;amount:number|unde
 }
 
 function Cart({checkout=false}:{checkout?:boolean}) {
-  const {cart:regularCart,setCart,user,sessionError,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail}=useMarket();
+  const {money}=useMarket();
+  const {cart:regularCart,setCart,user,sessionError,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t}=useMarket();
   const [params]=useSearchParams();
   const quick=params.get('mode')==='buy-now';
   const cart=quick?(quickOrder?[quickOrder]:[]):regularCart;
@@ -758,30 +939,30 @@ function Cart({checkout=false}:{checkout?:boolean}) {
 
   const methods=checkout&&user ? <form id="payment-form" className="payment-flow" onSubmit={buy} noValidate autoComplete="off">
     <fieldset disabled={busy}>
-      <legend>How would you like to pay?</legend>
+      <legend>{t('How would you like to pay?')}</legend>
       <label className="payment-method">
         <span className="payment-icon"><Wallet size={25}/></span>
-        <span><strong>Eneba Wallet</strong><small>Pay with your Eneba wallet balance.</small></span>
+        <span><strong>Eneba Wallet</strong><small>{t('Pay with your Eneba wallet balance.')}</small></span>
         <input name="method" type="radio" checked={method==='wallet'} onChange={()=>selectMethod('wallet')}/>
       </label>
       <label className="payment-method">
         <span className="payment-icon"><CreditCard size={25}/></span>
-        <span><strong>Credit or debit card</strong><small>Pay with Visa or Mastercard.</small></span>
+        <span><strong>{t('Credit or debit card')}</strong><small>{t('Pay with Visa or Mastercard.')}</small></span>
         <input name="method" type="radio" checked={method==='card'} onChange={()=>selectMethod('card')}/>
       </label>
       <div className="payment-panel">
-        <span className="test-mode"><ShieldCheck size={16}/>Test mode — no real charges</span>
+        <span className="test-mode"><ShieldCheck size={16}/>{t('Test mode — no real charges')}</span>
         {method==='wallet'&&<TestWallet key={user.email} email={user.email} amount={payable} switchToCard={()=>selectMethod('card')}/>}
         {method==='card'&&<>
-          <details className="payment-help"><summary>Test payment details</summary>
+          <details className="payment-help"><summary>{t('Test payment details')}</summary>
             <dl><dt>Successful payment</dt><dd><code>4242 4242 4242 4242</code></dd><dt>Declined payment</dt><dd><code>0000 0000 0000 0000</code></dd></dl>
             <p>Use any test name, a future expiry date, and any three digits for CVC.</p>
           </details>
           <div className="card-inputs">
-            <label>Cardholder name<input {...fieldProps('name')} value={card.name} onChange={e=>update('name',e.target.value)} maxLength={80} placeholder="Cardholder name" required/>{fieldError('name')}</label>
-            <label>Card number<input {...fieldProps('number')} inputMode="numeric" value={card.number} onChange={e=>update('number',digits(e.target.value,16).match(/.{1,4}/g)?.join(' ')||'')} placeholder="0000 0000 0000 0000" required/>{fieldError('number')}</label>
+            <label>{t('Cardholder name')}<input {...fieldProps('name')} value={card.name} onChange={e=>update('name',e.target.value)} maxLength={80} placeholder="Cardholder name" required/>{fieldError('name')}</label>
+            <label>{t('Card number')}<input {...fieldProps('number')} inputMode="numeric" value={card.number} onChange={e=>update('number',digits(e.target.value,16).match(/.{1,4}/g)?.join(' ')||'')} placeholder="0000 0000 0000 0000" required/>{fieldError('number')}</label>
             <div className="card-fields">
-              <label>Expiry date<input {...fieldProps('expiry')} inputMode="numeric" value={card.expiry} onChange={e=>{const value=digits(e.target.value,4);update('expiry',value.length>2?value.slice(0,2)+'/'+value.slice(2):value);}} placeholder="MM/YY" required/>{fieldError('expiry')}</label>
+              <label>{t('Expiry date')}<input {...fieldProps('expiry')} inputMode="numeric" value={card.expiry} onChange={e=>{const value=digits(e.target.value,4);update('expiry',value.length>2?value.slice(0,2)+'/'+value.slice(2):value);}} placeholder="MM/YY" required/>{fieldError('expiry')}</label>
               <label>CVC<input {...fieldProps('cvc')} type="password" inputMode="numeric" value={card.cvc} onChange={e=>update('cvc',digits(e.target.value,3))} placeholder="•••" required/>{fieldError('cvc')}</label>
             </div>
           </div>
@@ -800,7 +981,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
           <small>Sold by <strong>{current?.seller??item.seller}</strong></small>
           <Link to={'/product/'+item.slug}><strong>{current?.name??item.name}</strong></Link>
           {current&&<small>{[current.platform,current.region].filter(Boolean).join(' · ')}</small>}
-          {current?.region && current.region!=='Global'&&<small className="checkout-restriction">Activation restricted to {current.region}.</small>}
+          {current?.region&&<small className="checkout-restriction">{activationEligibility(current.region,current.country??undefined,preferences.country)}</small>}
           {current && current.available<item.quantity&&<small className="field-error">{current.available} available</small>}
         </div>
         <div className="checkout-item-controls">
@@ -823,22 +1004,23 @@ function Cart({checkout=false}:{checkout?:boolean}) {
       setDeliveryEmail(email);
       navigate(user?paymentPath:signIn);
     }}>
-      <h2>Where to deliver the order?</h2>
+      <h2>{t('Where to deliver the order?')}</h2>
       <label>Email<input type="email" required maxLength={254} autoComplete="email" value={email} onChange={event=>setDeliveryEmail(event.target.value)}/></label>
       <p>Purchased keys are available in your account after payment.</p>
     </form>}
     <section className="checkout-box">
-      <h2>{checkout?'Order summary':'Summary'}</h2>
+      <h2>{t(checkout?'Order summary':'Summary')}</h2>
       {checkout&&lineItems(false)}
-      {!checkout&&<button className="button primary" form="delivery-form" disabled={!quote||unavailable||user===undefined}>Proceed to checkout</button>}
+      {!checkout&&<button className="button primary" form="delivery-form" disabled={!quote||unavailable||user===undefined}>{t('Proceed to checkout')}</button>}
       <dl className="checkout-totals">
-        <div><dt>Subtotal</dt><dd>{quote?money(quote.cents-quote.serviceFeeCents+quote.discountCents):'—'}</dd></div>
-        <div><dt>Service fee</dt><dd>{quote?money(quote.serviceFeeCents):'—'}</dd></div>
+        <div><dt>{t('Subtotal')}</dt><dd>{quote?money(quote.cents-quote.serviceFeeCents+quote.discountCents):'—'}</dd></div>
+        <div><dt>{t('Service fee')}</dt><dd>{quote?money(quote.serviceFeeCents):'—'}</dd></div>
         {Boolean(quote?.discountCents)&&<div><dt>Discount</dt><dd>−{money(quote!.discountCents)}</dd></div>}
-        <div className="checkout-total"><dt>Total</dt><dd>{payable===undefined?'—':money(payable)}</dd></div>
+        <div className="checkout-total"><dt>{t('Total')}</dt><dd>{payable===undefined?'—':money(payable)}</dd></div>
       </dl>
-      {checkout&&<div className="checkout-email"><span>Delivery email</span><strong>{email||'—'}</strong><Link to={cartPath}>Edit</Link></div>}
-      {checkout&&user&&<button form="payment-form" className="button primary pay-button" disabled={busy || !method || payable===undefined || (!pending&&unavailable)}>{busy?'Processing…':payable!==undefined?'Pay '+money(payable):'Pay'}<ArrowRight size={18}/></button>}
+      {preferences.currency!=='EUR'&&payable!==undefined&&<p>Test total in EUR: {new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(payable/100)}. Displayed equivalents use fixed demo rates.</p>}
+      {checkout&&<div className="checkout-email"><span>{t('Delivery email')}</span><strong>{email||'—'}</strong><Link to={cartPath}>{t('Edit')}</Link></div>}
+      {checkout&&user&&<button form="payment-form" className="button primary pay-button" disabled={busy || !method || payable===undefined || (!pending&&unavailable)}>{busy?t('Processing…'):payable!==undefined?t('Pay')+' '+money(payable):t('Pay')}<ArrowRight size={18}/></button>}
       {pending&&checkout&&<p>A previous payment may still be pending. Retry with the same method and test details to check its outcome.</p>}
       {quoteError&&<><ErrorText message={quoteError}/><button className="button secondary" onClick={()=>refreshQuote(version=>version+1)}>Refresh total</button></>}
       {!pending&&!quoteError&&!quote&&<Loading/>}
@@ -851,10 +1033,10 @@ function Cart({checkout=false}:{checkout?:boolean}) {
       <>
         <div className="checkout-grid">
           <div className="checkout-main">
-            {!checkout?<section className="checkout-box"><h1>My cart</h1>{lineItems(true)}</section>:<>
+            {!checkout?<section className="checkout-box"><h1>{t('My cart')}</h1>{lineItems(true)}</section>:<>
               {sessionError&&<ErrorText message={sessionError}/>}
               {user===undefined?<Loading/>:user?methods:<section className="checkout-box"><h1>Sign in to continue</h1><Link className="button primary" to={signIn}>Sign in to checkout</Link></section>}
-              <Link className="back-link" to={cartPath}><ArrowLeft size={16}/> Back to cart</Link>
+              <Link className="back-link" to={cartPath}><ArrowLeft size={16}/> {t('Back to cart')}</Link>
             </>}
           </div>
           {summary}
@@ -865,6 +1047,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
 }
 
 function Orders() {
+  const {money}=useMarket();
   const {setUser}=useMarket();
   const navigate=useNavigate();
   const [failure,setFailure]=useState('');
@@ -899,13 +1082,14 @@ function ReceivedKey({code,index}:{code:string;index:number}) {
 }
 
 function OrderPage() {
+  const {money,t}=useMarket();
   const {id}=useParams();
   const {data,error}=useData<OrderDetail>('/orders/'+id);
   if (error) return <ErrorText message={error}/>;
   if (!data) return <Loading/>;
   return <div className="inner receipt">
     <Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
-    <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>Payment successful</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()} · {data.payment_method==='wallet'?'Eneba Wallet':'Credit or debit card'}</p></div><strong>{money(data.cents)}</strong></div>
+    <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>{t('Payment successful')}</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()} · {data.payment_method==='wallet'?'Eneba Wallet':'Credit or debit card'}</p></div><strong>{money(data.cents)}</strong></div>
     <h2 className="receipt-title">Receipt summary</h2>
     {data.items.map(i=><article className="key-card" key={i.id}>
       <div className="receipt-item">
@@ -919,7 +1103,7 @@ function OrderPage() {
         {i.activation && <details><summary>How to activate on {i.platform}</summary><p>{i.activation}</p></details>}
       </div>
     </article>)}
-    <div className="actions receipt-actions"><Link className="button secondary" to="/orders">View orders</Link><Link className="button primary" to="/store">Continue shopping<ArrowRight size={18}/></Link></div>
+    <div className="actions receipt-actions"><Link className="button secondary" to="/orders">{t('View orders')}</Link><Link className="button primary" to="/store">{t('Continue shopping')}<ArrowRight size={18}/></Link></div>
   </div>;
 }
 
@@ -932,22 +1116,107 @@ function Protected({children}:{children:ReactNode}) {
 }
 
 function CheckoutHeader({step,quick}:{step:number;quick:boolean}) {
+  const {t}=useMarket();
   const steps=['Cart','Payment','Get your product'];
   return <header className="checkout-header"><div className="wrap">
     <Brand/>
     <ol className="checkout-progress" aria-label="Checkout progress">
       {steps.map((label,index)=><li key={label} data-state={index+1<step?'done':index+1===step?'active':'upcoming'} aria-current={index+1===step?'step':undefined}>
         <span aria-hidden="true">{index+1<step?<Check size={14}/>:index+1}</span>
-        {step===2&&index===0?<Link to={quick?'/cart?mode=buy-now':'/cart'}>{label}</Link>:<strong>{label}</strong>}
+        {step===2&&index===0?<Link to={quick?'/cart?mode=buy-now':'/cart'}>{t(label)}</Link>:<strong>{t(label)}</strong>}
       </li>)}
     </ol>
-    <details className="locale-control"><summary aria-label="Language and currency"><Globe size={17}/><span>English | EUR</span></summary>
-      <div><strong>English · EUR</strong><p>Prices are quoted in euros.</p></div>
-    </details>
+    <SettingsControl/>
   </div></header>;
 }
 
+const footerGroups=[
+  {title:'About Eneba',links:[['Official Eneba website','https://www.eneba.com/'],['About this recreation','/help#about']]},
+  {title:'Buy',links:[['How to buy','/help#buy'],['Collections','/store?collection=top-games'],['Cheap games','/store/cheap-games']]},
+  {title:'Help',links:[['FAQ','/help'],['How to activate a game','/help#activation'],['Test payments','/help#payments']]},
+  {title:'Community',links:[['Gift Guide','/store/gift-guide'],['Your wishlist','/wishlist']]},
+  {title:'Business',links:[['About seller offers','/help#sellers'],['Source repository','https://github.com/Nisha-gpt/eneba']]},
+  {title:'Follow us',links:[['Eneba on Instagram','https://www.instagram.com/eneba_games/'],['Project on GitHub','https://github.com/Nisha-gpt/eneba']]},
+];
+
+function PaymentStrip() {
+  return <div className="payment-strip"><div className="wrap"><span><Wallet size={19}/> Eneba Wallet</span><span><CreditCard size={19}/> Credit or debit card</span></div></div>;
+}
+
+function Footer({showPayments}:{showPayments:boolean}) {
+  const [message,setMessage]=useState('');
+  const [failure,setFailure]=useState('');
+  const [submitting,setSubmitting]=useState(false);
+  async function subscribe(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    const form=event.currentTarget;
+    setMessage('');setFailure('');setSubmitting(true);
+    try{
+      await api('/newsletter',{email:new FormData(form).get('email')});
+      form.reset();
+      setMessage('Your demo newsletter preference was saved.');
+    }catch(err){setFailure((err as Error).message);}
+    finally{setSubmitting(false);}
+  }
+  return <>
+    {showPayments&&<PaymentStrip/>}
+    <footer className="site-footer"><div className="wrap">
+      <div className="footer-columns">
+        {footerGroups.map(group=><div key={group.title}><h2>{group.title}</h2>{group.links.map(([label,destination])=>
+          destination.startsWith('https:')?<a key={label} href={destination} target="_blank" rel="noreferrer">{label} <ArrowUpRight size={12}/><span className="sr-only"> (external)</span></a>
+          : <Link key={label} to={destination}>{label}</Link>)}</div>)}
+        <div><h2>Explore the demo</h2><Link to="/store">Browse the marketplace</Link><Link to="/orders">View orders</Link></div>
+        <div><h2>Product reviews</h2><Link to="/product/elden-ring#reviews">Read or write a review</Link></div>
+      </div>
+      <div className="footer-lower">
+        <div><h2>Get personalized game deals</h2>
+          <form onSubmit={subscribe} className="newsletter">
+            <input type="email" name="email" aria-label="Newsletter email" placeholder="Enter your email" required maxLength={254}/>
+            <button className="button secondary" disabled={submitting}>{submitting?'Saving…':'Subscribe'}</button>
+          </form>
+          <small>Demo subscription only. No emails are sent.</small>
+          {message&&<p role="status">{message}</p>}
+          {failure&&<ErrorText message={failure}/>}
+        </div>
+        <SettingsControl/>
+      </div>
+      <p className="footer-note">Unofficial Eneba internship recreation · Simulated payments and non-redeemable test keys</p>
+    </div></footer>
+  </>;
+}
+
+function Help() {
+  const {hash}=useLocation();
+  useEffect(()=>{if(hash)document.getElementById(hash.slice(1))?.scrollIntoView();},[hash]);
+  return <div className="inner help-page">
+    <h1>Marketplace help</h1>
+    <section id="about"><h2>About this recreation</h2><p>An unofficial marketplace built for the Eneba internship assignment.</p></section>
+    <section id="buy"><h2>How to buy</h2><p>Choose an in-stock seller offer, review your cart, and sign in before choosing a payment method.</p><Link to="/store">Browse the store</Link></section>
+    <section id="activation"><h2>How to activate a game</h2><p>Open the Activation guide on a product page for the platform’s instructions. Your order history contains the non-redeemable test key.</p></section>
+    <section id="payments"><h2>Test payments</h2><p>Checkout supports a test card and Eneba Wallet test funds. Keys are available from your account after checkout.</p></section>
+    <section id="sellers"><h2>About seller offers</h2><p>Choose the seller at checkout by selecting its offer on the product page. The displayed price comes from available inventory for that offer.</p></section>
+  </div>;
+}
+
 function App() {
+  const [preferences,setPreferences]=useState(()=>saved<Preferences>('eneba.preferences',defaultPreferences));
+  const [settings,setSettings]=useState(false);
+  const [settingsMessage,setSettingsMessage]=useState('');
+  const [history,setHistory]=useState(()=>saved<string[]>('eneba.history',[]));
+  const navigation=useData<Category[]>('/navigation');
+  const t=(text:string)=>preferences.language==='es'?translations[text]??text:text;
+  const formatter=useMemo(()=>new Intl.NumberFormat(preferences.language==='es'?'es-ES':'en-IE',{style:'currency',currency:preferences.currency}),[preferences.language,preferences.currency]);
+  const money=(cents:number)=>formatter.format(cents*currencyRates[preferences.currency]/100);
+  function recordView(slug:string){
+    setHistory(previous=>{
+      if(previous[0]===slug)return previous;
+      const next=[slug,...previous.filter(item=>item!==slug)].slice(0,12);
+      localStorage.setItem('eneba.history',JSON.stringify(next));
+      return next;
+    });
+  }
+  useEffect(()=>{document.documentElement.lang=preferences.language;},[preferences.language]);
+
   const [deliveryEmail,updateDeliveryEmail]=useState<string|null>(()=>sessionStorage.getItem('eneba.delivery-email'));
   function setDeliveryEmail(email:string){
     sessionStorage.setItem('eneba.delivery-email',email);
@@ -988,18 +1257,24 @@ function App() {
       .catch(error => finish({user:null,error:error.message}));
     return () => request.abort();
   }, []);
-  useEffect(()=>{window.scrollTo(0,0);},[pathname]);
+  useEffect(()=>{if(!window.location.hash)window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
   function setCart(items:Item[]) {localStorage.setItem('keyshift.cart',JSON.stringify(items));updateCart(items);}
-  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail}}>
+  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t,money,openSettings:()=>setSettings(true),navigation,history,recordView}}>
     {step?<CheckoutHeader step={step} quick={quick}/>:<Header/>}
     <main className="wrap"><Routes>
-      <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/store/:category" element={<Store/>}/><Route path="/wishlist" element={<Wishlist/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
+      <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/store/:category" element={<Store/>}/><Route path="/wishlist" element={<Wishlist/>}/><Route path="/help" element={<Help/>}/><Route path="/product/:slug" element={<ProductPage/>}/>
       <Route path="/cart" element={<Cart key="cart"/>}/><Route path="/checkout" element={<Cart key="checkout" checkout/>}/><Route path="/login" element={<Auth key="login"/>}/><Route path="/register" element={<Auth key="register"/>}/>
       <Route path="/orders" element={<Protected><Orders/></Protected>}/><Route path="/orders/:id" element={<Protected><OrderPage/></Protected>}/>
       <Route path="*" element={<Empty title="Page not found"><Link to="/">Return home</Link></Empty>}/>
     </Routes></main>
-    <footer><div className="wrap footer-inner"><Brand/><p>Unofficial Eneba internship recreation · Simulated payments</p><Link to="/store">Store <ArrowUpRight size={15}/></Link></div></footer>
+    <Footer showPayments={pathname==='/'}/>
+    {settings&&<SettingsDialog preferences={preferences} onClose={()=>setSettings(false)} onSave={value=>{
+      localStorage.setItem('eneba.preferences',JSON.stringify(value));
+      setPreferences(value);setSettings(false);
+      setSettingsMessage(value.language==='es'?'Preferencias guardadas.':'Settings saved.');
+    }}/>}
+    {settingsMessage&&<div className="toast" role="status"><Check size={17}/>{settingsMessage}<button className="text-button" aria-label={t('Close')} onClick={()=>setSettingsMessage('')}><X size={16}/></button></div>}
     {toast && <div className="toast" role="status"><ShoppingCart size={17}/>{toast} <Link to="/cart">View cart</Link></div>}
   </MarketContext.Provider>;
 }

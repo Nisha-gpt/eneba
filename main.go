@@ -124,10 +124,13 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return tx.Commit(ctx)
 }
 
-const catalog = `SELECT p.*, (
- SELECT min(o.cents) FROM offers o WHERE o.product_id=p.id
- AND EXISTS(SELECT 1 FROM inventory i WHERE i.offer_id=o.id AND i.line_id IS NULL)
- ) AS cents FROM products p`
+const catalog = `SELECT p.*,best.cents,to_jsonb(best) AS featured_offer FROM products p
+ LEFT JOIN LATERAL (
+  SELECT o.id,o.cents,s.name AS seller,available.stock FROM offers o JOIN sellers s ON s.id=o.seller_id
+  CROSS JOIN LATERAL (SELECT count(*) AS stock FROM inventory i WHERE i.offer_id=o.id AND i.line_id IS NULL) available
+  WHERE o.product_id=p.id AND available.stock>0
+  ORDER BY o.cents,o.id LIMIT 1
+ ) best ON true`
 
 func (a app) store(w http.ResponseWriter, r *http.Request) error {
 	q := r.URL.Query()
@@ -156,7 +159,7 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	selected := make(map[string][]string)
-	for _, key := range []string{"platform", "region", "country", "type", "brand", "os", "currency", "denomination"} {
+	for _, key := range []string{"platform", "region", "country", "type", "brand", "os", "currency", "denomination", "genre"} {
 		if len(q[key]) > 20 {
 			return fail(400, "Too many filter values.")
 		}
@@ -178,11 +181,12 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
   SELECT slug FROM categories WHERE slug=$2
   UNION ALL SELECT c.slug FROM categories c JOIN scope s ON c.parent=s.slug
  ), candidates AS (
-  SELECT p.*, attributes || jsonb_build_object('platform',platform,'region',region) AS fields,
+  SELECT p.*, attributes || jsonb_build_object('platform',platform,'region',region,'genre',genre) AS fields,
     CASE WHEN $1='' OR strpos(lower(name),$1)>0 THEN 2 ELSE word_similarity($1,lower(name)) END AS score
   FROM (`+catalog+`) p
   WHERE ($1='' OR strpos(lower(name),$1)>0 OR (length($1)>=3 AND word_similarity($1,lower(name))>=0.42))
    AND ($2='' OR EXISTS(SELECT 1 FROM product_categories pc JOIN scope s ON s.slug=pc.category WHERE pc.product_id=p.id))
+   AND ($7='' OR EXISTS(SELECT 1 FROM collections c WHERE c.section=$7 AND c.product_id=p.id))
  ), price_range AS (
   SELECT * FROM candidates WHERE ($3::int<0 OR cents >= $3) AND ($4::int<0 OR cents <= $4)
  ), evaluated AS (
@@ -198,7 +202,7 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
  ), counts AS (
   SELECT f.key,f.value,count(*) AS count
   FROM evaluated e CROSS JOIN LATERAL jsonb_each_text(e.fields) f
-  WHERE f.key IN ('platform','region','country','type','brand','os','currency','denomination')
+  WHERE f.key IN ('platform','region','country','type','brand','os','currency','denomination','genre')
     AND e.exclusions <@ ARRAY[f.key]
   GROUP BY f.key,f.value
  ), facets AS (
@@ -207,11 +211,13 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
  )
  SELECT jsonb_build_object(
  'category',(SELECT to_jsonb(c) FROM categories c WHERE c.slug=$2),
+ 'collection',(SELECT title FROM collection_sections WHERE section=$7),
  'facets',COALESCE((SELECT jsonb_object_agg(key,options) FROM facets),'{}'),
  'items',COALESCE((SELECT jsonb_agg(to_jsonb(page)-'position'-'score'-'fields'-'exclusions' ORDER BY position) FROM page),'[]'),
  'total',(SELECT count(*) FROM matched),'pageSize',8)
- WHERE $2='' OR EXISTS(SELECT 1 FROM scope)
- `, search, q.Get("category"), min, max, encoded, (page-1)*8))
+ WHERE ($2='' OR EXISTS(SELECT 1 FROM scope))
+ AND ($7='' OR EXISTS(SELECT 1 FROM collection_sections WHERE section=$7))
+ `, search, q.Get("category"), min, max, encoded, (page-1)*8, q.Get("collection")))
 }
 
 func (a app) navigation(w http.ResponseWriter, r *http.Request) error {
@@ -311,14 +317,64 @@ func (a app) saveReview(w http.ResponseWriter, r *http.Request) error {
 	return a.reviews(w, r)
 }
 
+const cardJSON = `jsonb_build_object(
+ 'id',p.id,'slug',p.slug,'name',p.name,'platform',p.platform,'region',p.region,
+ 'artwork',p.artwork,'attributes',p.attributes,'cents',p.cents,'featured_offer',p.featured_offer)`
+
 func (a app) home(section string) endpoint {
 	return func(w http.ResponseWriter, r *http.Request) error {
 		return queryJSON(w, a.db.QueryRow(r.Context(), `
   SELECT to_jsonb(s) || jsonb_build_object('items', COALESCE((
-   SELECT jsonb_agg(to_jsonb(p) ORDER BY c.rank) FROM collections c
+   SELECT jsonb_agg(`+cardJSON+` ORDER BY c.rank) FROM collections c
    JOIN (`+catalog+`) p ON p.id=c.product_id WHERE c.section=s.section
   ),'[]')) FROM collection_sections s WHERE s.section=$1`, section))
 	}
+}
+
+func (a app) homeBrands(w http.ResponseWriter, r *http.Request) error {
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT COALESCE(jsonb_agg(to_jsonb(b) ORDER BY name),'[]')
+ FROM (
+  SELECT attributes->>'brand' AS name,min(attributes->>'tone') AS tone
+  FROM products WHERE attributes->>'type'='eGift Card' GROUP BY 1
+ ) b`))
+}
+
+func (a app) homeGenres(w http.ResponseWriter, r *http.Request) error {
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT COALESCE(jsonb_agg(to_jsonb(g) ORDER BY count DESC,name),'[]')
+ FROM (SELECT genre AS name,count(*) FROM products WHERE attributes->>'type'='Game' GROUP BY genre) g`))
+}
+
+func (a app) recentlyViewed(w http.ResponseWriter, r *http.Request) error {
+	slugs := r.URL.Query()["slug"]
+	if len(slugs) > 12 {
+		return fail(400, "Request up to 12 recently viewed products.")
+	}
+	if slugs == nil {
+		slugs = []string{}
+	}
+	return queryJSON(w, a.db.QueryRow(r.Context(), `
+ SELECT COALESCE(jsonb_agg(`+cardJSON+` ORDER BY list.position),'[]')
+ FROM unnest($1::text[]) WITH ORDINALITY list(slug,position)
+ JOIN (`+catalog+`) p ON p.slug=list.slug`, slugs))
+}
+
+func (a app) subscribe(w http.ResponseWriter, r *http.Request) error {
+	var form struct {
+		Email string `json:"email"`
+	}
+	if err := read(w, r, &form); err != nil {
+		return err
+	}
+	email := strings.ToLower(strings.TrimSpace(form.Email))
+	if len(email) > 254 || !emailPattern.MatchString(email) || strings.ContainsRune(email, 0) {
+		return fail(400, "Enter a valid email address.")
+	}
+	if _, err := a.db.Exec(r.Context(), `INSERT INTO newsletter_subscriptions(email) VALUES($1) ON CONFLICT DO NOTHING`, email); err != nil {
+		return err
+	}
+	return write(w, 200, map[string]bool{"ok": true})
 }
 
 type credentials struct {
@@ -466,7 +522,7 @@ func (a app) quote(w http.ResponseWriter, r *http.Request) error {
       SELECT jsonb_build_object(
         'cents',COALESCE(sum(o.cents * i.quantity), 0), 'serviceFeeCents',0,'discountCents',0,
         'items',jsonb_agg(jsonb_build_object('offer',i.offer,'quantity',i.quantity,
-          'name',p.name,'seller',s.name,'cents',o.cents,'artwork',p.artwork,'platform',p.platform,'region',p.region,
+          'name',p.name,'seller',s.name,'cents',o.cents,'artwork',p.artwork,'platform',p.platform,'region',p.region,'country',p.attributes->>'country',
           'available',COALESCE(stock.count, 0)) ORDER BY i.offer))
       FROM jsonb_to_recordset($1::jsonb) AS i(offer bigint, quantity integer)
       LEFT JOIN offers o ON o.id=i.offer
@@ -684,10 +740,19 @@ func (a app) routes(static string) http.Handler {
 		return write(w, 200, map[string]bool{"ok": true})
 	}))
 	mux.HandleFunc("GET /api/home/banner", handler(func(w http.ResponseWriter, r *http.Request) error {
-		return queryJSON(w, a.db.QueryRow(r.Context(), `SELECT to_jsonb(p) FROM promotions p ORDER BY id LIMIT 1`))
+		return queryJSON(w, a.db.QueryRow(r.Context(), `SELECT to_jsonb(p)||jsonb_build_object('campaigns',
+ (SELECT jsonb_agg(to_jsonb(c) ORDER BY rank) FROM homepage_campaigns c))
+ FROM promotions p ORDER BY id LIMIT 1`))
 	}))
 	mux.HandleFunc("GET /api/home/bestsellers", handler(a.home("bestsellers")))
 	mux.HandleFunc("GET /api/home/deals", handler(a.home("deals")))
+	for _, section := range []string{"recommended", "top-games", "gift-cards", "upcoming"} {
+		mux.HandleFunc("GET /api/home/"+section, handler(a.home(section)))
+	}
+	mux.HandleFunc("GET /api/home/gift-brands", handler(a.homeBrands))
+	mux.HandleFunc("GET /api/home/genres", handler(a.homeGenres))
+	mux.HandleFunc("GET /api/home/recent", handler(a.recentlyViewed))
+	mux.HandleFunc("POST /api/newsletter", handler(a.subscribe))
 	mux.HandleFunc("GET /api/navigation", handler(a.navigation))
 	mux.HandleFunc("GET /api/products", handler(a.store))
 	mux.HandleFunc("GET /api/products/{slug}", handler(a.product))

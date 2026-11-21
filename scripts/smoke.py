@@ -40,7 +40,7 @@ assert len(request(guest, "/home/deals")["items"]) == 5
 assert request(guest, "/filters")["regions"]
 first = request(guest, "/products")
 second = request(guest, "/products?page=2")
-assert first["total"] == second["total"] == 57
+assert first["total"] == second["total"] == 65
 assert len(first["items"]) == 8 and len(second["items"]) == 8
 assert {p["id"] for p in first["items"]}.isdisjoint(p["id"] for p in second["items"])
 categories = request(guest, "/navigation")
@@ -174,5 +174,20 @@ wallet_order = request(buyer, f"/orders/{next(order for order in payments if ord
 assert wallet_order["payment_method"] == "wallet" and wallet_order["delivery_email"] == "delivery@example.test"
 assert len(set(wallet_order["items"][0]["keys"])) == 3
 request(other, f"/orders/{wallet_order['id']}", expected=404)
+
+for section in ["recommended", "top-games", "gift-cards", "upcoming"]:
+    block = request(guest, "/home/" + section)
+    listing = request(guest, "/products?collection=" + section)
+    assert block["items"] and listing["total"] == len(block["items"])
+    assert all(p["featured_offer"]["cents"] == p["cents"] for p in block["items"] if p["featured_offer"])
+brands = request(guest, "/home/gift-brands")
+assert {"Google Play", "Netflix", "Spotify", "Uber"}.issubset(brand["name"] for brand in brands)
+assert request(guest, "/home/genres")
+assert request(guest, "/home/recent") == []
+recent = request(guest, "/home/recent?slug=portal-2&slug=elden-ring")
+assert [product["slug"] for product in recent] == ["portal-2", "elden-ring"]
+request(guest, "/newsletter", {"email": "invalid"}, expected=400)
+assert request(guest, "/newsletter", {"email": email})["ok"]
+assert request(guest, "/newsletter", {"email": email.upper()})["ok"]
 
 print("PASS: catalog, reviews, recommendations, authorization, card outcomes, checkout retries, stock exhaustion, wallet funding, concurrent wallet debit and order ownership.")

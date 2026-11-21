@@ -44,6 +44,8 @@ The homepage uses `/api/home/banner`, `/api/home/bestsellers`, and `/api/home/de
 
 Search normalizes whitespace and case and gives literal substrings precedence in relevance order. For queries of at least three characters, PostgreSQL `word_similarity` also compares trigrams across the query and portions of the product name, accepting a score of 0.42 or higher. For example, `elden` matches `Elden Ring`, and `cybrpunk` matches `Cyberpunk 2077`. Heavily misspelled and very short queries have limited fuzzy recall.
 
+The homepage requests its campaign, discovery rows, gift brands and genre counts independently. Recently viewed is stored on the current browser. The Spanish preference translates the supported navigation, discovery headings, settings and core checkout controls. Currency equivalents use fixed demo rates. Database prices, checkout and wallet accounting stay in EUR. Newsletter subscriptions store one normalized email per address and do not send mail.
+
 ## Checkout and key delivery
 
 Checkout progresses through Cart, Payment, and Get your product. The cart preserves seller offers and the edited delivery email through sign-in. The app records the delivery email with the order and makes keys available in the authenticated account. It does not send email. The Go API quotes current prices, stock, and the €0.00 service fee.
@@ -90,6 +92,6 @@ Neon's published free plan includes 100 compute-unit hours and 1 GB of storage p
 
 ## Scope and asset sources
 
-The catalog seeds 57 sample products with two or three offers each. Category membership, nested navigation, product attributes, and contextual filter counts come from PostgreSQL. Mobile, recharge and eSIM products deliver test vouchers through the existing key flow. The wishlist is stored on the current browser. The demo storefront uses English and quotes EUR. There is no real payment processing, real key redemption, seller administration, password reset, or automated restocking. Add rate limits and abuse protections before using this beyond a demo. Stock is finite and shared across all users. Browser carts stay on the same browser and can show stale estimates until checkout validates the order.
+The catalog seeds 65 sample products, including fictional upcoming releases sold as test preorders. Category membership, nested navigation, product attributes, and contextual filter counts come from PostgreSQL. Mobile, recharge and eSIM products deliver test vouchers through the existing key flow. The wishlist is stored on the current browser. The demo storefront uses English and quotes EUR. There is no real payment processing, real key redemption, seller administration, password reset, or automated restocking. Add rate limits and abuse protections before using this beyond a demo. Stock is finite and shared across all users. Browser carts stay on the same browser and can show stale estimates until checkout validates the order.
 
 The Eneba screenshots provided with the brief informed the marketplace structure. The banner and all product illustrations in `web/public/art` were created with OpenAI ImageGen for this demo and bundled as WebP files. The illustrations are original concept artwork. Product names are used to demonstrate catalog search. DM Sans and Space Grotesk are distributed via Fontsource under the SIL Open Font License. The interface icons are from Lucide.
