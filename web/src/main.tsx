@@ -5,20 +5,84 @@ import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, 
 import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift, Star, Wallet, CreditCard, Trash2, Swords, Compass, Target, Flag, Flame } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
 import './style.css';
+import currencies from './currencies.json';
 
 type Product = {featured_offer?:{id:number;cents:number;seller:string;stock?:number}|null;id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; attributes:Record<string,string>; cents:number|null};
 type CardProduct = Pick<Product,'id'|'slug'|'name'|'platform'|'region'|'artwork'|'attributes'|'cents'|'featured_offer'>;
 type Offer = {id:number; seller:string; cents:number; stock:number};
 type Item = {offer:number; quantity:number; name:string; seller:string; cents:number; slug:string};
 type User = {email:string};
-type Order = {id:number; cents:number; created_at:string};
+type Order = {id:number; cents:number; created_at:string; display_currency:string; display_rate:number};
 type OrderDetail = Order & {payment_method:'card'|'wallet'; delivery_email:string|null; items:{id:number; product:string; seller:string; cents:number; quantity:number; keys:string[]; artwork:string; platform:string; region:string; activation:string}[]};
 type Banner = {campaigns:{title:string;subtitle:string;destination:string;artwork:string}[];mobile_artwork?:string;eyebrow:string; headline:string; subtitle:string; action:string; destination:string; artwork:string};
 
-type Preferences={country:string;language:'en'|'es';currency:'EUR'|'USD'|'GBP'};
+type Currency=keyof typeof currencies;
+type Preferences={country:string;language:'en'|'es';currency:Currency};
 const defaultPreferences:Preferences={country:'India',language:'en',currency:'EUR'};
-const currencyRates={EUR:1,USD:1.10,GBP:0.85};
-const countries:Record<string,string>={India:'Asia',Germany:'Europe',France:'Europe','United Kingdom':'Europe','United States':'North America',Canada:'North America',Spain:'Europe'};
+const currencyRates=Object.fromEntries(Object.entries(currencies).map(([code,value])=>[code,value.rate/10000])) as Record<Currency,number>;
+
+const europeanCountries='AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE GB NO CH IS'.split(' ');
+const countryRegions:Record<string,string>=Object.fromEntries([
+  ...europeanCountries.map(code=>[code,'Europe']),['IN','Asia'],['US','North America'],['CA','North America'],
+]);
+const englishNames=new Intl.DisplayNames('en',{type:'region'});
+const countryCodes=Object.keys(countryRegions);
+function countryCode(name:string) {
+  return countryCodes.find(code=>englishNames.of(code)===name);
+}
+function CountryFlag({country}:{country:string}) {
+  const code=countryCode(country);
+  return code?<img className="country-flag" src={'/art/flags/'+code.toLowerCase()+'.svg'} width={20} height={15} alt=""/>:null;
+}
+function CountryPicker({country,language,onChange}:{country:string;language:string;onChange:(name:string)=>void}) {
+  const [open,setOpen]=useState(false);
+  const [filter,setFilter]=useState('');
+  const [index,setIndex]=useState(-1);
+  const input=useRef<HTMLInputElement>(null);
+  const trigger=useRef<HTMLButtonElement>(null);
+  const names=new Intl.DisplayNames(language,{type:'region'});
+  const options=countryCodes.map(code=>({code,name:englishNames.of(code)!,label:names.of(code)!}))
+    .sort((a,b)=>a.label.localeCompare(b.label,language))
+    .filter(option=>[option.label,option.name,option.code].some(value=>value.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase())));
+  const active=options[index];
+  function choose(name:string){
+    onChange(name);setOpen(false);trigger.current?.focus();
+  }
+  useEffect(()=>{if(open)input.current?.focus();},[open]);
+  useEffect(()=>{if(open&&active)document.getElementById('settings-country-'+active.code)?.scrollIntoView({block:'nearest'});},[active?.code,open]);
+  return <div className="country-picker">
+    <span id="country-label">{language==='es'?'Región':'Region'}</span>
+    <button type="button" ref={trigger} aria-labelledby="country-label country-value" aria-expanded={open} aria-controls="country-options"
+      onClick={()=>{setFilter('');setIndex(-1);setOpen(!open);}}>
+      <CountryFlag country={country}/><span id="country-value">{names.of(countryCode(country)??'IN')}</span><ChevronRight size={16}/>
+    </button>
+    {open&&<div className="country-dropdown">
+      <input role="combobox" ref={input} aria-label={language==='es'?'Buscar país':'Search countries'} aria-expanded="true" aria-controls="country-options"
+        aria-autocomplete="list" aria-activedescendant={active?'settings-country-'+active.code:undefined}
+        placeholder={language==='es'?'Buscar país':'Search countries'} value={filter}
+        onChange={event=>{setFilter(event.target.value);setIndex(-1);}} onKeyDown={event=>{
+          if(event.key==='Escape'){event.preventDefault();event.stopPropagation();setOpen(false);trigger.current?.focus();}
+          if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+            event.preventDefault();
+            if(options.length)setIndex(current=>event.key==='ArrowDown'?Math.min(options.length-1,current+1):current<0?options.length-1:Math.max(0,current-1));
+          }
+          if(event.key==='Enter'){event.preventDefault();if(active)choose(active.name);}
+        }}/>
+      <div className="country-options" role="listbox" id="country-options" aria-labelledby="country-label">
+        {options.map(option=><button type="button" role="option" key={option.code} id={'settings-country-'+option.code}
+          tabIndex={-1} aria-selected={option.name===country} data-active={option.code===active?.code}
+          onMouseDown={event=>event.preventDefault()} onClick={()=>choose(option.name)}><CountryFlag country={option.name}/>{option.label}</button>)}
+      </div>
+      {!options.length&&<small role="status">{language==='es'?'No se encontraron países.':'No matching countries.'}</small>}
+    </div>}
+  </div>;
+}
+
+function formatOrderMoney(cents:number,language:string,currency:string,rate:number) {
+  return new Intl.NumberFormat(language==='es'?'es-ES':'en-IE',{style:'currency',currency})
+    .format(cents*rate/1000000);
+}
+
 const translations:Record<string,string>={
   'Update your settings':'Actualiza tus preferencias',Region:'Región',Language:'Idioma',Currency:'Moneda',Close:'Cerrar',Cancel:'Cancelar',Save:'Guardar',
   'Settings saved.':'Preferencias guardadas.',Categories:'Categorías',Games:'Juegos','Cheap Games':'Juegos baratos',Software:'Software','Gift Guide':'Guía de regalos',
@@ -37,19 +101,18 @@ const translations:Record<string,string>={
 };
 
 function activationEligibility(region:string,country:string|undefined,selected:string) {
-  if(region==='Global') return `Can be activated in ${selected}.`;
-  if(country && country!=='Worldwide' && !Object.values(countries).includes(country)) {
-    if(country in countries) return country===selected?`Can be activated in ${selected}.`:`This offer is for ${country}; it cannot be activated in ${selected}.`;
-  }
-  return countries[selected]===region||selected===region
+  if(country && countryCode(country)) return country===selected
     ? `Can be activated in ${selected}.`
-    : `This offer is restricted to ${region}; it cannot be activated in ${selected}.`;
+    : `This offer is for ${country}; it cannot be activated in ${selected}.`;
+  if(region==='Global'||countryRegions[countryCode(selected)??'']===region||selected===region)
+    return `Can be activated in ${selected}.`;
+  return `This offer is restricted to ${region}; it cannot be activated in ${selected}.`;
 }
 
 function SettingsControl() {
   const {preferences,openSettings}=useMarket();
-  return <button type="button" className="settings-control" onClick={openSettings} aria-haspopup="dialog" aria-label="Language and currency">
-    <Globe size={17}/><span>{preferences.language==='es'?'Español':'English'} · {preferences.currency}</span>
+  return <button type="button" className="settings-control" onClick={openSettings} aria-haspopup="dialog" aria-label="Language and currency" title={preferences.country}>
+    <CountryFlag country={preferences.country}/><span>{preferences.country} · {preferences.language==='es'?'Español':'English'} · {preferences.currency}</span>
   </button>;
 }
 
@@ -70,9 +133,9 @@ function SettingsDialog({onClose,onSave,preferences}:{onClose:()=>void;onSave:(v
     onClick={event=>{if(event.target===event.currentTarget) onClose();}}>
     <form onSubmit={event=>{event.preventDefault();onSave(draft);}}>
       <div className="settings-head"><h2 id="settings-title">{t('Update your settings')}</h2><button type="button" aria-label={t('Close')} onClick={onClose}><X size={20}/></button></div>
-      <label>{t('Region')}<select aria-label={t('Region')} value={draft.country} onChange={e=>setDraft({...draft,country:e.target.value})}>{Object.keys(countries).map(country=><option key={country}>{country}</option>)}</select></label>
+      <CountryPicker country={draft.country} language={preferences.language} onChange={country=>setDraft({...draft,country})}/>
       <label>{t('Language')}<select aria-label={t('Language')} value={draft.language} onChange={e=>setDraft({...draft,language:e.target.value as Preferences['language']})}><option value="en">English</option><option value="es">Español</option></select></label>
-      <label>{t('Currency')}<select aria-label={t('Currency')} value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value as Preferences['currency']})}>{Object.keys(currencyRates).map(currency=><option key={currency}>{currency}</option>)}</select></label>
+      <label>{t('Currency')}<select aria-label={t('Currency')} value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value as Preferences['currency']})}>{Object.entries(currencies).map(([code,value])=><option key={code} value={code}>{code} — {value.symbol}{'legacy' in value?' (legacy)':''}</option>)}</select></label>
       <small>Currency equivalents use fixed demo rates. Orders and wallet balances are recorded in EUR.</small>
       <div className="actions"><button type="button" className="button secondary" onClick={onClose}>{t('Cancel')}</button><button className="button primary">{t('Save')}</button></div>
     </form>
@@ -862,7 +925,7 @@ function Auth() {
 
 type CheckoutQuote = {cents:number;serviceFeeCents:number;discountCents:number; items:{offer:number;quantity:number;name:string|null;seller:string|null;cents:number|null;available:number;artwork:string|null;platform:string|null;region:string|null;country:string|null}[]};
 type Scenario = 'test_card_approved' | 'test_card_declined' | 'test_wallet';
-type PendingPayment = {basket:string;scenario:Scenario;cents:number;id:string};
+type PendingPayment = {currency?:Currency;basket:string;scenario:Scenario;cents:number;id:string};
 type CardField = 'name' | 'number' | 'expiry' | 'cvc';
 const testCards: Record<string,Scenario> = {'4242424242424242':'test_card_approved','0000000000000000':'test_card_declined'};
 
@@ -870,8 +933,7 @@ function digits(value:string, limit:number) {
   return value.replace(/\D/g,'').slice(0,limit);
 }
 
-function TestWallet({email,amount,switchToCard}:{email:string;amount:number|undefined;switchToCard:()=>void}) {
-  const {money}=useMarket();
+function TestWallet({email,amount,switchToCard,money}:{email:string;amount:number|undefined;switchToCard:()=>void;money:(cents:number)=>string}) {
   const {data,error}=useData<{cents:number;topUpCents:number}>('/wallet');
   const [funded,setFunded]=useState<{cents:number;topUpCents:number}>();
   const [busy,setBusy]=useState(false);
@@ -909,7 +971,6 @@ function TestWallet({email,amount,switchToCard}:{email:string;amount:number|unde
 }
 
 function Cart({checkout=false}:{checkout?:boolean}) {
-  const {money}=useMarket();
   const {cart:regularCart,setCart,user,sessionError,retrySession,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t}=useMarket();
   const [params]=useSearchParams();
   const quick=params.get('mode')==='buy-now';
@@ -934,6 +995,8 @@ function Cart({checkout=false}:{checkout?:boolean}) {
   const basket=JSON.stringify({account:user?.email,deliveryEmail:email,items});
   const savedPayment=saved<PendingPayment|null>('eneba.checkout',null);
   const pending=savedPayment?.basket===basket?savedPayment:null;
+  const currency=pending ? pending.currency??'EUR' : preferences.currency;
+  const money=(cents:number)=>formatOrderMoney(cents,preferences.language,currency,currencies[currency].rate);
   const unavailable=quote?.items.some(i=>!i.name || i.available<i.quantity);
   const payable=pending?.cents ?? quote?.cents;
   useEffect(()=>{
@@ -993,8 +1056,8 @@ function Cart({checkout=false}:{checkout?:boolean}) {
     setError('');
     const id=pending?.id ?? crypto.randomUUID();
     try {
-      localStorage.setItem('eneba.checkout',JSON.stringify({basket,scenario,cents:payable,id}));
-      const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id,deliveryEmail:email.trim()});
+      localStorage.setItem('eneba.checkout',JSON.stringify({basket,scenario,cents:payable,id,currency}));
+      const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id,deliveryEmail:email.trim(),currency:currency==='EUR'?undefined:currency});
       if(quick) setQuickOrder(null);
       else setCart([]);
       localStorage.removeItem('eneba.checkout');
@@ -1036,7 +1099,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
       </label>
       <div className="payment-panel">
         <span className="test-mode"><ShieldCheck size={16}/>{t('Test mode — no real charges')}</span>
-        {method==='wallet'&&<TestWallet key={user.email} email={user.email} amount={payable} switchToCard={()=>selectMethod('card')}/>}
+        {method==='wallet'&&<TestWallet key={user.email} email={user.email} money={money} amount={payable} switchToCard={()=>selectMethod('card')}/>}
         {method==='card'&&<>
           <details className="payment-help"><summary>{t('Test payment details')}</summary>
             <dl><dt>Successful payment</dt><dd><code>4242 4242 4242 4242</code></dd><dt>Declined payment</dt><dd><code>0000 0000 0000 0000</code></dd></dl>
@@ -1102,7 +1165,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
         {Boolean(quote?.discountCents)&&<div><dt>Discount</dt><dd>−{money(quote!.discountCents)}</dd></div>}
         <div className="checkout-total"><dt>{t('Total')}</dt><dd>{payable===undefined?'—':money(payable)}</dd></div>
       </dl>
-      {preferences.currency!=='EUR'&&payable!==undefined&&<p>Test total in EUR: {new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(payable/100)}. Displayed equivalents use fixed demo rates.</p>}
+      {currency!=='EUR'&&payable!==undefined&&<p>Test total in EUR: {new Intl.NumberFormat('en-IE',{style:'currency',currency:'EUR'}).format(payable/100)}. Displayed equivalents use fixed demo rates.</p>}
       {checkout&&<div className="checkout-email"><span>{t('Delivery email')}</span><strong>{email||'—'}</strong><Link to={cartPath}>{t('Edit')}</Link></div>}
       {checkout&&user&&<button form="payment-form" className="button primary pay-button" disabled={busy || !method || payable===undefined || (!pending&&unavailable)}>{busy?t('Processing…'):payable!==undefined?t('Pay')+' '+money(payable):t('Pay')}<ArrowRight size={18}/></button>}
       {pending&&checkout&&<p>A previous payment may still be pending. Retry with the same method and test details to check its outcome.</p>}
@@ -1131,7 +1194,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
 }
 
 function Orders() {
-  const {money}=useMarket();
+  const {preferences}=useMarket();
   const {setUser}=useMarket();
   const navigate=useNavigate();
   const [failure,setFailure]=useState('');
@@ -1144,7 +1207,7 @@ function Orders() {
     <div className="section-heading"><h1>Order history</h1><button className="button secondary" onClick={signOut}>Sign out</button></div>
     {failure && <ErrorText message={failure}/>}
     {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:!data.length?<Empty title="No orders yet"><Link className="button primary" to="/store">Browse games</Link></Empty>:
-      <div className="order-list">{data.map(o=><Link className="offer" key={o.id} to={'/orders/'+o.id}><div><strong>Order #{o.id}</strong><small>{new Date(o.created_at).toLocaleDateString()}</small></div><strong>{money(o.cents)}</strong><ArrowUpRight size={18}/></Link>)}</div>}
+      <div className="order-list">{data.map(o=><Link className="offer" key={o.id} to={'/orders/'+o.id}><div><strong>Order #{o.id}</strong><small>{new Date(o.created_at).toLocaleDateString()}</small></div><strong>{formatOrderMoney(o.cents,preferences.language,o.display_currency??'EUR',o.display_rate??10000)}</strong><ArrowUpRight size={18}/></Link>)}</div>}
   </div>;
 }
 
@@ -1166,11 +1229,12 @@ function ReceivedKey({code,index}:{code:string;index:number}) {
 }
 
 function OrderPage() {
-  const {money,t}=useMarket();
+  const {preferences,t}=useMarket();
   const {id}=useParams();
   const {data,error,retry}=useData<OrderDetail>('/orders/'+id);
   if (error) return <RetryError message={error} retry={retry}/>;
   if (!data) return <Loading/>;
+  const money=(cents:number)=>formatOrderMoney(cents,preferences.language,data.display_currency??'EUR',data.display_rate??10000);
   return <div className="inner receipt">
     <Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
     <div className="receipt-header"><span className="receipt-check"><Check size={22}/></span><div><h1>{t('Payment successful')}</h1><p>Order #{data.id} · {new Date(data.created_at).toLocaleDateString()} · {data.payment_method==='wallet'?'Eneba Wallet':'Credit or debit card'}</p></div><strong>{money(data.cents)}</strong></div>
@@ -1283,7 +1347,14 @@ function Help() {
 }
 
 function App() {
-  const [preferences,setPreferences]=useState(()=>saved<Preferences>('eneba.preferences',defaultPreferences));
+  const [preferences,setPreferences]=useState(()=>{
+    const savedPreferences=saved<Preferences>('eneba.preferences',defaultPreferences);
+    return {
+      country:countryCode(savedPreferences.country)?savedPreferences.country:defaultPreferences.country,
+      language:savedPreferences.language==='es'?'es' as const:'en' as const,
+      currency:Object.hasOwn(currencies,savedPreferences.currency)?savedPreferences.currency:defaultPreferences.currency,
+    };
+  });
   const [settings,setSettings]=useState(false);
   const [settingsMessage,setSettingsMessage]=useState('');
   const [history,setHistory]=useState(()=>saved<string[]>('eneba.history',[]));

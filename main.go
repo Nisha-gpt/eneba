@@ -521,12 +521,25 @@ type line struct {
 	Offer    int64 `json:"offer"`
 	Quantity int   `json:"quantity"`
 }
+
+//go:embed web/src/currencies.json
+var currencyData []byte
+
+var checkoutCurrencies = func() map[string]struct{ Rate int } {
+	var currencies map[string]struct{ Rate int }
+	if err := json.Unmarshal(currencyData, &currencies); err != nil {
+		panic(err)
+	}
+	return currencies
+}()
+
 type checkoutRequest struct {
 	Items         []line `json:"items"`
 	RequestID     string `json:"requestId"`
 	Payment       string `json:"payment"`
 	ExpectedCents *int   `json:"expectedCents,omitempty"`
 	DeliveryEmail string `json:"deliveryEmail,omitempty"`
+	Currency      string `json:"currency,omitempty"`
 }
 
 var requestPattern = regexp.MustCompile(`^[A-Za-z0-9-]{16,80}$`)
@@ -604,9 +617,15 @@ func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
 	if err := validateLines(req.Items); err != nil {
 		return err
 	}
+	if req.Currency != "" && checkoutCurrencies[req.Currency].Rate <= 0 {
+		return fail(400, "Choose a supported currency.")
+	}
 	payload, _ := json.Marshal(req)
 	hash := sha256.Sum256(payload)
 	fingerprint := hex.EncodeToString(hash[:])
+	if req.Currency == "" {
+		req.Currency = "EUR"
+	}
 	if req.DeliveryEmail == "" {
 		req.DeliveryEmail = email
 	}
@@ -696,7 +715,7 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 			return 0, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE orders SET cents=$1, payment_method=$3, delivery_email=$4 WHERE id=$2`, total, order, method, req.DeliveryEmail); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE orders SET cents=$1, payment_method=$3, delivery_email=$4, display_currency=$5, display_rate=$6 WHERE id=$2`, total, order, method, req.DeliveryEmail, req.Currency, checkoutCurrencies[req.Currency].Rate); err != nil {
 		return 0, err
 	}
 	return order, tx.Commit(ctx)
@@ -713,7 +732,7 @@ func (a app) orders(w http.ResponseWriter, r *http.Request) error {
 			return fail(404, "Order not found.")
 		}
 		return queryJSON(w, a.db.QueryRow(r.Context(), `
-  SELECT jsonb_build_object('id',o.id,'cents',o.cents,'created_at',o.created_at,'payment_method',o.payment_method,'delivery_email',o.delivery_email,'items',(
+  SELECT jsonb_build_object('id',o.id,'cents',o.cents,'created_at',o.created_at,'payment_method',o.payment_method,'delivery_email',o.delivery_email,'display_currency',o.display_currency,'display_rate',o.display_rate,'items',(
    SELECT jsonb_agg(jsonb_build_object('id',l.id,'product',l.product_name,'seller',l.seller_name,'cents',l.cents,
     'quantity',l.quantity,'keys',COALESCE((SELECT jsonb_agg(i.code ORDER BY i.id) FROM inventory i WHERE i.line_id=l.id),'[]'))
     || COALESCE(l.product_details,jsonb_build_object('artwork',p.artwork,'platform',p.platform,'region',p.region,'activation',p.activation)) ORDER BY l.id)
@@ -721,7 +740,7 @@ func (a app) orders(w http.ResponseWriter, r *http.Request) error {
   FROM orders o WHERE o.id=$1 AND o.account_id=$2`, n, id))
 	}
 	return queryJSON(w, a.db.QueryRow(r.Context(), `
- SELECT COALESCE(jsonb_agg(jsonb_build_object('id',id,'cents',cents,'created_at',created_at) ORDER BY id DESC),'[]')
+ SELECT COALESCE(jsonb_agg(jsonb_build_object('id',id,'cents',cents,'created_at',created_at,'display_currency',display_currency,'display_rate',display_rate) ORDER BY id DESC),'[]')
  FROM orders WHERE account_id=$1`, id))
 }
 

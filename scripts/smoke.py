@@ -146,7 +146,7 @@ assert {p["id"] for p in recommendations["items"]}.isdisjoint(p["id"] for p in n
 wallet_offer = offers[1]
 wallet_items = [{"offer": wallet_offer["id"], "quantity": 3}]
 wallet_payload = {"requestId": str(uuid.uuid4()), "payment": "test_wallet", "items": wallet_items,
-                  "expectedCents": wallet_offer["cents"] * 3, "deliveryEmail": "delivery@example.test"}
+                  "expectedCents": wallet_offer["cents"] * 3, "deliveryEmail": "delivery@example.test", "currency": "INR"}
 request(guest, "/wallet", expected=401)
 assert request(buyer, "/wallet")["cents"] == 0
 request(buyer, "/checkout", wallet_payload, expected=402)
@@ -171,6 +171,8 @@ assert len({order for order in payments if order}) == 1
 assert request(buyer, "/wallet")["cents"] == 2500 - wallet_payload["expectedCents"]
 assert request(other, "/wallet")["cents"] == 0
 wallet_order = request(buyer, f"/orders/{next(order for order in payments if order)}")
+assert wallet_order["display_currency"] == "INR" and wallet_order["display_rate"] == 990000
+assert detail["display_currency"] == "EUR" and detail["display_rate"] == 10000
 assert wallet_order["payment_method"] == "wallet" and wallet_order["delivery_email"] == "delivery@example.test"
 assert len(set(wallet_order["items"][0]["keys"])) == 3
 request(other, f"/orders/{wallet_order['id']}", expected=404)

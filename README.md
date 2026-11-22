@@ -46,6 +46,8 @@ Search normalizes whitespace and case and gives literal substrings precedence in
 
 The homepage requests its campaign, discovery rows, gift brands and genre counts independently. Recently viewed is stored on the current browser. The Spanish preference translates the supported navigation, discovery headings, settings and core checkout controls. Currency equivalents use fixed demo rates. Database prices, checkout and wallet accounting stay in EUR. Newsletter subscriptions store one normalized email per address and do not send mail.
 
+Country, language and display currency are independent browser preferences. Country flags are bundled from flag-icons 7.6.0 (MIT). Currency assignments were checked against Unicode CLDR 49. Lithuania, Latvia, Estonia and Bulgaria use EUR. BGN is a legacy display option. Checkout stores the display currency and fixed demo conversion rate with each new receipt. Older orders show their original EUR ledger amounts because previous versions stored only EUR.
+
 ## Checkout and key delivery
 
 Checkout progresses through Cart, Payment, and Get your product. The cart preserves seller offers and the edited delivery email through sign-in. The app records the delivery email with the order and makes keys available in the authenticated account. It does not send email. The Go API quotes current prices, stock, and the €0.00 service fee.

@@ -1,0 +1,17 @@
+{
+  "EUR": {"rate": 10000, "symbol": "€"},
+  "GBP": {"rate": 8500, "symbol": "£"},
+  "USD": {"rate": 11000, "symbol": "$"},
+  "INR": {"rate": 990000, "symbol": "₹"},
+  "PLN": {"rate": 42500, "symbol": "zł"},
+  "CZK": {"rate": 250000, "symbol": "Kč"},
+  "HUF": {"rate": 3950000, "symbol": "Ft"},
+  "RON": {"rate": 50000, "symbol": "lei"},
+  "BGN": {"rate": 19558, "symbol": "лв", "legacy": true},
+  "SEK": {"rate": 111000, "symbol": "kr"},
+  "DKK": {"rate": 74600, "symbol": "kr"},
+  "NOK": {"rate": 116000, "symbol": "kr"},
+  "CHF": {"rate": 9400, "symbol": "CHF"},
+  "ISK": {"rate": 1450000, "symbol": "kr"},
+  "CAD": {"rate": 15500, "symbol": "$"}
+}

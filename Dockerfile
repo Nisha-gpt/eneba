@@ -14,6 +14,7 @@ RUN --mount=type=secret,id=build-ca \
     if [ -r /run/secrets/build-ca ]; then export SSL_CERT_FILE=/run/secrets/build-ca; fi; \
     go mod download
 COPY main.go ./
+COPY web/src/currencies.json ./web/src/currencies.json
 COPY db/ ./db/
 RUN CGO_ENABLED=0 go build -trimpath -o /market .
 
