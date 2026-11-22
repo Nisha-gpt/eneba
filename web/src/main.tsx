@@ -4,7 +4,6 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, ArrowUpRight, Check, CircleUserRound, Gamepad2, KeyRound, Search, ShieldCheck, ShoppingCart, SlidersHorizontal, Monitor, Joystick, Gamepad, Menu, X, ChevronLeft, ChevronRight, Globe, Heart, Gift, Star, Wallet, CreditCard, Trash2, Swords, Compass, Target, Flag, Flame } from 'lucide-react';
 import '@fontsource-variable/dm-sans';
-import '@fontsource-variable/space-grotesk';
 import './style.css';
 
 type Product = {featured_offer?:{id:number;cents:number;seller:string;stock?:number}|null;id:number; slug:string; name:string; platform:string; region:string; genre:string; description:string; activation:string; artwork:string; attributes:Record<string,string>; cents:number|null};
@@ -85,32 +84,48 @@ class RequestError extends Error {
 }
 
 async function api<T>(path:string, body?:unknown, signal?:AbortSignal):Promise<T> {
-  const response = await fetch('/api'+path, {
-    signal,
-    ...(body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
-  });
-  const media = response.headers.get('Content-Type')?.split(';', 1)[0].trim();
-  if (media !== 'application/json') {
-    throw new RequestError('The store is temporarily unavailable. Please try again.', response.status);
+  const controller=new AbortController();
+  const cancel=()=>controller.abort();
+  if(signal?.aborted) cancel();
+  else signal?.addEventListener('abort',cancel,{once:true});
+  let timedOut=false;
+  const timeout=window.setTimeout(()=>{timedOut=true;cancel();},16000);
+  try {
+    const response = await fetch('/api'+path, {
+      signal:controller.signal,
+      ...(body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    });
+    const media = response.headers.get('Content-Type')?.split(';', 1)[0].trim();
+    if (media !== 'application/json') throw new RequestError('The store is temporarily unavailable. Please try again.', response.status);
+    const data = await response.json();
+    if (!response.ok) throw new RequestError(data?.error || 'Request failed.', response.status);
+    return data as T;
+  } catch(error) {
+    if(timedOut) throw new RequestError('The request took too long. Please try again.',0);
+    if(error instanceof RequestError || signal?.aborted) throw error;
+    if(error instanceof SyntaxError) throw new RequestError('The store returned an unreadable response. Please try again.',0);
+    throw new RequestError('Could not connect to the store. Please try again.',0);
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener('abort',cancel);
   }
-  const data = await response.json().catch(() => {
-    throw new RequestError('The store returned an unreadable response. Please try again.', response.status);
-  });
-  if (!response.ok) throw new RequestError(data?.error || 'Request failed.', response.status);
-  return data as T;
 }
 
-function useData<T>(path:string): {data?:T; error?:string; previous?:T; retry:()=>void} {
+type DataResult<T>={data?:T;error?:string;previous?:T;retry:()=>void};
+function useData<T>(path:string|null): DataResult<T> {
   const [attempt,setAttempt]=useState(0);
   const [result,setResult] = useState<{path:string; data?:T; error?:string}>({path:''});
   useEffect(() => {
+    if(!path) return;
     const controller = new AbortController();
-    api<T>(path,undefined,controller.signal).then(data => setResult({path,data})).catch(error => {
-      if (!controller.signal.aborted) setResult({path,error:error.message});
+    api<T>(path,undefined,controller.signal).then(data => {
+      if(!controller.signal.aborted) setResult({path,data});
+    }).catch(error => {
+      if (!controller.signal.aborted) setResult(previous=>({path,data:previous.path===path?previous.data:undefined,error:error.message}));
     });
     return () => controller.abort();
   },[path,attempt]);
-  const retry=()=>{setResult({path:''});setAttempt(value=>value+1);};
+  const retry=()=>{setResult(previous=>({...previous,error:undefined}));setAttempt(value=>value+1);};
   return {...(result.path === path ? result : {previous:result.data}),retry};
 }
 
@@ -135,7 +150,7 @@ function saved<T>(key:string, fallback:T):T {
   catch { return fallback; }
 }
 
-type Market = {preferences:Preferences;t:(text:string)=>string;money:(cents:number)=>string;openSettings:()=>void;navigation:{data?:Category[];error?:string;retry:()=>void};history:string[];recordView:(slug:string)=>void;deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
+type Market = {preferences:Preferences;t:(text:string)=>string;money:(cents:number)=>string;openSettings:()=>void;navigation:{data?:Category[];error?:string;retry:()=>void};history:string[];recordView:(slug:string)=>void;deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; retrySession:()=>void; notice:(s:string)=>void};
 const MarketContext = createContext<Market>(null!);
 const useMarket = () => useContext(MarketContext);
 const ErrorText = ({message}:{message:string}) => <p className="feedback error" role="alert">{message}</p>;
@@ -541,7 +556,7 @@ function Store() {
   const request=new URLSearchParams(params);
   if(category) request.set('category',category);
   else request.delete('category');
-  const {data,error,previous} = useData<Listing>('/products?'+request);
+  const {data,error,previous,retry} = useData<Listing>('/products?'+request);
   useEffect(()=>{
     if(!data?.category) return;
     document.title=data.category.name+' | Eneba internship marketplace recreation';
@@ -594,7 +609,7 @@ function Store() {
         </div>
         <div className="result-head"><span>Results found: <strong>{data?.total??'—'}</strong></span>
           <label><span>Sort by</span> <select aria-label="Sort by" value={params.get('sort')||''} onChange={e=>update('sort',e.target.value)}><option value="">Relevance</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option><option value="name-asc">Name: A–Z</option><option value="name-desc">Name: Z–A</option></select></label></div>
-        {error ? <ErrorText message={error}/> : !data ? <Loading/> : data.items.length ? <div className="grid store-grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products found"><p>Try a different search or clear your filters.</p><Link className="button secondary" to={category?categoryPath(category):'/store'}>Browse all in this category</Link></Empty>}
+        {error ? <RetryError message={error} retry={retry}/> : !data ? <Loading/> : data.items.length ? <div className="grid store-grid">{data.items.map(p=><Card key={p.id} product={p}/>)}</div> : <Empty title="No products found"><p>Try a different search or clear your filters.</p><Link className="button secondary" to={category?categoryPath(category):'/store'}>Browse all in this category</Link></Empty>}
         {data && (data.total>data.pageSize || page>1) && <div className="pagination"><button className="button secondary" disabled={page<=1} onClick={()=>update('page',String(page-1))}>Previous</button><span>Page {page} of {Math.max(1,Math.ceil(data.total/data.pageSize))}</span><button className="button secondary" disabled={page*data.pageSize>=data.total} onClick={()=>update('page',String(page+1))}>Next</button></div>}
       </div>
     </div>
@@ -604,9 +619,11 @@ function Store() {
 type ProductDetail = Product & {offers:Offer[];release_date:string|null};
 type ReviewSummary = {count:number;average:number|null;items:{id:number;rating:number;body:string;updated_at:string}[]};
 
-function Recommendations({slug,title='Gamers also viewed'}:{slug:string;title?:string}) {
+type RecommendationsPage={items:Product[];hasMore:boolean};
+function Recommendations({slug,title='Gamers also viewed',initial}:{slug:string;title?:string;initial?:DataResult<RecommendationsPage>}) {
   const path='/products/'+encodeURIComponent(slug)+'/recommendations';
-  const {data,error}=useData<{items:Product[];hasMore:boolean}>(path);
+  const local=useData<RecommendationsPage>(initial?null:path);
+  const {data,error,retry}=initial??local;
   const [extra,setExtra]=useState<Product[]>([]);
   const [page,setPage]=useState(2);
   const [more,setMore]=useState<boolean>();
@@ -625,17 +642,18 @@ function Recommendations({slug,title='Gamers also viewed'}:{slug:string;title?:s
   }
   return <section className="product-section">
     <h2>{title}</h2>
-    {error?<ErrorText message={error}/>:!data?<Loading/>:!data.items.length?<p>No recommendations available.</p>:
+    {error&&<RetryError message={error} retry={retry}/>}
+    {!data?(error?null:<Loading/>):!data.items.length?<p>No recommendations available.</p>:
       <div className="grid product-recommendations">{[...data.items,...extra].map(item=><Card key={item.id} product={item}/>)}</div>}
     {failure&&<ErrorText message={failure}/>}
     {(more??data?.hasMore)&&<div className="load-recommendations"><button className="button secondary" disabled={busy} onClick={loadMore}>{busy?'Loading…':'Load more'}</button></div>}
   </section>;
 }
 
-function ProductReviews({slug}:{slug:string}) {
+function ProductReviews({slug,initial}:{slug:string;initial:DataResult<ReviewSummary>}) {
   const {user}=useMarket();
   const path='/products/'+encodeURIComponent(slug)+'/reviews';
-  const {data,error}=useData<ReviewSummary>(path);
+  const {data,error,retry}=initial;
   const [current,setCurrent]=useState<ReviewSummary>();
   const [open,setOpen]=useState(false);
   const [busy,setBusy]=useState(false);
@@ -665,7 +683,8 @@ function ProductReviews({slug}:{slug:string}) {
         : <Link className="button secondary" to={'/login?product='+encodeURIComponent(slug)}>Sign in to review</Link>}
     </div>
     <div className="product-panel review-summary">
-      {error?<ErrorText message={error}/>:!reviews?<Loading/>:<>
+      {error&&<RetryError message={error} retry={retry}/>}
+      {!reviews?(error?null:<Loading/>):<>
         <div className="review-score"><Star size={21}/><strong>{reviews.average===null?'No ratings yet':reviews.average.toFixed(1)+' / 5'}</strong><span>{reviews.count} {reviews.count===1?'review':'reviews'}</span></div>
         {!reviews.count&&<p>Be the first to review this product.</p>}
         {reviews.count>reviews.items.length&&<small>Showing the {reviews.items.length} most recent reviews.</small>}
@@ -689,7 +708,10 @@ function ProductReviews({slug}:{slug:string}) {
 function ProductPage() {
   const {money}=useMarket();
   const {slug}=useParams();
-  const {data,error}=useData<ProductDetail>('/products/'+encodeURIComponent(slug??''));
+  const path='/products/'+encodeURIComponent(slug??'');
+  const {data,error,retry}=useData<ProductDetail>(path);
+  const recommendations=useData<RecommendationsPage>(slug?path+'/recommendations':null);
+  const reviews=useData<ReviewSummary>(slug?path+'/reviews':null);
   const {cart,setCart,notice,setQuickOrder,recordView,preferences}=useMarket();
   const navigate=useNavigate();
   const [tab,setTab]=useState<'description'|'activation'>('description');
@@ -716,7 +738,7 @@ function ProductPage() {
     setCart(existing ? cart.map(i=>i.offer===o.id?item:i) : [...cart,item]);
     navigate('/cart');
   }
-  if (error) return <ErrorText message={error}/>;
+  if (error) return <RetryError message={error} retry={retry}/>;
   if (!data) return <div className="inner product-pending"><Loading/></div>;
   const available=data.offers.filter(offer=>offer.stock>0);
   const featured=available[0];
@@ -771,8 +793,8 @@ function ProductPage() {
         {!data.offers.length&&<p>No seller offers yet.</p>}
       </section>
     </div>
-    <Recommendations key={data.slug} slug={data.slug}/>
-    <ProductReviews key={data.slug} slug={data.slug}/>
+    <Recommendations key={data.slug} slug={data.slug} initial={recommendations}/>
+    <ProductReviews key={data.slug} slug={data.slug} initial={reviews}/>
     <section className="product-section" id="product-details">
       <h2>Product Details</h2>
       <div className="product-panel">
@@ -888,7 +910,7 @@ function TestWallet({email,amount,switchToCard}:{email:string;amount:number|unde
 
 function Cart({checkout=false}:{checkout?:boolean}) {
   const {money}=useMarket();
-  const {cart:regularCart,setCart,user,sessionError,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t}=useMarket();
+  const {cart:regularCart,setCart,user,sessionError,retrySession,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t}=useMarket();
   const [params]=useSearchParams();
   const quick=params.get('mode')==='buy-now';
   const cart=quick?(quickOrder?[quickOrder]:[]):regularCart;
@@ -1096,7 +1118,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
         <div className="checkout-grid">
           <div className="checkout-main">
             {!checkout?<section className="checkout-box"><h1>{t('My cart')}</h1>{lineItems(true)}</section>:<>
-              {sessionError&&<ErrorText message={sessionError}/>}
+              {sessionError&&<RetryError message={sessionError} retry={retrySession}/>}
               {user===undefined?<Loading/>:user?methods:<section className="checkout-box"><h1>Sign in to continue</h1><Link className="button primary" to={signIn}>Sign in to checkout</Link></section>}
               <Link className="back-link" to={cartPath}><ArrowLeft size={16}/> {t('Back to cart')}</Link>
             </>}
@@ -1113,7 +1135,7 @@ function Orders() {
   const {setUser}=useMarket();
   const navigate=useNavigate();
   const [failure,setFailure]=useState('');
-  const {data,error}=useData<Order[]>('/orders');
+  const {data,error,retry}=useData<Order[]>('/orders');
   async function signOut() {
     try {await api('/logout',{});setUser(null);navigate('/');}
     catch (err) {setFailure((err as Error).message);}
@@ -1121,7 +1143,7 @@ function Orders() {
   return <div className="inner"><Breadcrumb>Orders</Breadcrumb>
     <div className="section-heading"><h1>Order history</h1><button className="button secondary" onClick={signOut}>Sign out</button></div>
     {failure && <ErrorText message={failure}/>}
-    {error?<ErrorText message={error}/>:!data?<Loading/>:!data.length?<Empty title="No orders yet"><Link className="button primary" to="/store">Browse games</Link></Empty>:
+    {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:!data.length?<Empty title="No orders yet"><Link className="button primary" to="/store">Browse games</Link></Empty>:
       <div className="order-list">{data.map(o=><Link className="offer" key={o.id} to={'/orders/'+o.id}><div><strong>Order #{o.id}</strong><small>{new Date(o.created_at).toLocaleDateString()}</small></div><strong>{money(o.cents)}</strong><ArrowUpRight size={18}/></Link>)}</div>}
   </div>;
 }
@@ -1146,8 +1168,8 @@ function ReceivedKey({code,index}:{code:string;index:number}) {
 function OrderPage() {
   const {money,t}=useMarket();
   const {id}=useParams();
-  const {data,error}=useData<OrderDetail>('/orders/'+id);
-  if (error) return <ErrorText message={error}/>;
+  const {data,error,retry}=useData<OrderDetail>('/orders/'+id);
+  if (error) return <RetryError message={error} retry={retry}/>;
   if (!data) return <Loading/>;
   return <div className="inner receipt">
     <Breadcrumb><Link to="/orders">Orders</Link><span>/</span>#{data.id}</Breadcrumb>
@@ -1170,8 +1192,8 @@ function OrderPage() {
 }
 
 function Protected({children}:{children:ReactNode}) {
-  const {user,sessionError}=useMarket();
-  if (sessionError) return <><ErrorText message={sessionError}/><Empty title="Sign in to view your orders"><Link className="button primary" to="/login">Sign in</Link></Empty></>;
+  const {user,sessionError,retrySession}=useMarket();
+  if (sessionError) return <><RetryError message={sessionError} retry={retrySession}/><Empty title="Sign in to view your orders"><Link className="button primary" to="/login">Sign in</Link></Empty></>;
   if (user===undefined) return <Loading/>;
   if (!user) return <Empty title="Sign in to view your orders"><Link className="button primary" to="/login">Sign in</Link></Empty>;
   return children;
@@ -1301,6 +1323,11 @@ function App() {
     setWishlist(next);
   }
   const [session,setSession]=useState<{user?:User|null; error:string}>({error:''});
+  const [sessionAttempt,setSessionAttempt]=useState(0);
+  function retrySession(){
+    setSession({error:''});
+    setSessionAttempt(value=>value+1);
+  }
   const {user,error:sessionError}=session;
   function setUser(next:User|null) {
     setSession({user:next,error:''});
@@ -1318,11 +1345,11 @@ function App() {
       .then(user => finish({user,error:''}))
       .catch(error => finish({user:null,error:error.message}));
     return () => request.abort();
-  }, []);
+  }, [sessionAttempt]);
   useEffect(()=>{if(!window.location.hash)window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
   function setCart(items:Item[]) {localStorage.setItem('eneba.cart',JSON.stringify(items));updateCart(items);}
-  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t,money,openSettings:()=>setSettings(true),navigation,history,recordView}}>
+  return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,retrySession,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t,money,openSettings:()=>setSettings(true),navigation,history,recordView}}>
     {step?<CheckoutHeader step={step} quick={quick}/>:<Header/>}
     <main className="wrap"><Routes>
       <Route path="/" element={<Home/>}/><Route path="/store" element={<Store/>}/><Route path="/store/:category" element={<Store/>}/><Route path="/wishlist" element={<Wishlist/>}/><Route path="/help" element={<Help/>}/><Route path="/product/:slug" element={<ProductPage/>}/>

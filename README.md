@@ -81,6 +81,12 @@ vercel dev
 
 Check `/api/health`, reload a product page directly, and complete the demo checkout under the same project origin. Run the smoke script only against a disposable database.
 
+#### Database startup and pooling
+
+With a current schema, Go checks the applied migration names in one query and starts serving without taking the migration advisory lock. For a controlled rollout, run `go run . migrate` with the same database connection string before deployment, then choose `DB_MIGRATION_MODE=manual`. Serving in manual mode exits with an error if migrations are pending. Automatic migration remains the default for existing deployments.
+
+Use the Neon direct connection with the default settings. If you choose a transaction-pooler connection, set `DB_POOL_MODE=transaction` to avoid connection-bound prepared statements. To cap connections per Go instance, set `pool_max_conns` on the connection string based on the provider limit and your expected instance count. Co-locate the Go and Neon regions where your provider settings allow it. Runtime logs include database setup duration and API routes taking at least 500 ms.
+
 ### Docker and Render
 
 The Dockerfile builds a single container with the React app and Go server. `render.yaml` configures a candidate Render free Docker web service and health check. Use a Neon PostgreSQL database with `pg_trgm` available and set its direct, TLS-enabled connection string as the secret `DATABASE_URL` in the hosting dashboard. On Render, import the repository as a Blueprint and choose the free plan if currently available to your account. Confirm `GET /api/health` and complete the browser flow on the assigned public HTTPS URL. Keep `COOKIE_SECURE` at its default on HTTPS.

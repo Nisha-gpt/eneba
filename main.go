@@ -61,11 +61,21 @@ func publicCatalog(fn endpoint) http.HandlerFunc {
 
 func cachedHandler(fn endpoint, cache string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		defer func() {
+			if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+				log.Printf("slow API %s %s duration=%s", r.Method, r.Pattern, elapsed.Round(time.Millisecond))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
 		w.Header().Set("Cache-Control", cache)
-		if err := fn(w, r); err != nil {
+		if err := fn(w, r.WithContext(ctx)); err != nil {
 			w.Header().Set("Cache-Control", "no-store")
 			var ae apiError
-			if !errors.As(err, &ae) {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				ae = apiError{503, "The request took too long. Please try again."}
+			} else if !errors.As(err, &ae) {
 				log.Printf("%s %s: %v", r.Method, r.URL.Path, err)
 				ae = apiError{500, "Something went wrong. Please try again."}
 			}
@@ -98,7 +108,47 @@ func queryJSON(w http.ResponseWriter, row pgx.Row) error {
 	return write(w, 200, result)
 }
 
-func migrate(ctx context.Context, pool *pgxpool.Pool) error {
+type migrationReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func pendingMigrations(ctx context.Context, db migrationReader) ([]string, error) {
+	files, err := migrations.ReadDir("db")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(ctx, "SELECT name FROM schema_migrations")
+	var names []string
+	if err == nil {
+		names, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	}
+	if err != nil {
+		var pg *pgconn.PgError
+		if !errors.As(err, &pg) || pg.Code != "42P01" {
+			return nil, err
+		}
+	}
+	applied := map[string]bool{}
+	for _, name := range names {
+		applied[name] = true
+	}
+	var pending []string
+	for _, file := range files {
+		if !applied[file.Name()] {
+			pending = append(pending, file.Name())
+		}
+	}
+	return pending, nil
+}
+
+func migrate(ctx context.Context, pool *pgxpool.Pool, allowChanges bool) error {
+	pending, err := pendingMigrations(ctx, pool)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+	if !allowChanges {
+		return fmt.Errorf("database schema needs %d migration(s); run the migrate command", len(pending))
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -107,26 +157,19 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(381902); CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY)`); err != nil {
 		return err
 	}
-	files, err := migrations.ReadDir("db")
+	pending, err = pendingMigrations(ctx, tx)
 	if err != nil {
 		return err
 	}
-	for _, file := range files {
-		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)`, file.Name()).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
-		sql, err := migrations.ReadFile("db/" + file.Name())
+	for _, name := range pending {
+		sql, err := migrations.ReadFile("db/" + name)
 		if err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("%s: %w", file.Name(), err)
+			return fmt.Errorf("%s: %w", name, err)
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations VALUES($1)`, file.Name()); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations VALUES($1)`, name); err != nil {
 			return err
 		}
 	}
@@ -226,7 +269,7 @@ func (a app) store(w http.ResponseWriter, r *http.Request) error {
  'total',(SELECT count(*) FROM matched),'pageSize',8)
  WHERE ($2='' OR EXISTS(SELECT 1 FROM scope))
  AND ($7='' OR EXISTS(SELECT 1 FROM collection_sections WHERE section=$7))
- `, search, q.Get("category"), min, max, encoded, (page-1)*8, q.Get("collection")))
+ `, search, q.Get("category"), min, max, string(encoded), (page-1)*8, q.Get("collection")))
 }
 
 func (a app) navigation(w http.ResponseWriter, r *http.Request) error {
@@ -539,7 +582,7 @@ func (a app) quote(w http.ResponseWriter, r *http.Request) error {
       LEFT JOIN sellers s ON s.id=o.seller_id
       LEFT JOIN LATERAL (
         SELECT count(*) FROM inventory WHERE offer_id=o.id AND line_id IS NULL
-      ) stock ON true`, items))
+      ) stock ON true`, string(items)))
 }
 
 func (a app) checkout(w http.ResponseWriter, r *http.Request) error {
@@ -622,7 +665,7 @@ func (a app) purchase(ctx context.Context, account int64, req checkoutRequest, f
 		}
 		var lineID int64
 		err = tx.QueryRow(ctx, `INSERT INTO order_lines(order_id,offer_id,product_name,seller_name,cents,quantity,product_details)
-  VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, order, l.Offer, product, seller, cents, l.Quantity, details).Scan(&lineID)
+  VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, order, l.Offer, product, seller, cents, l.Quantity, string(details)).Scan(&lineID)
 		if err != nil {
 			return 0, err
 		}
@@ -836,13 +879,34 @@ func main() {
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is required")
 	}
-	db, err := pgxpool.New(ctx, dsn)
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		log.Fatal("Invalid database configuration")
+	}
+	if config.ConnConfig.ConnectTimeout == 0 {
+		config.ConnConfig.ConnectTimeout = 5 * time.Second
+	}
+	switch os.Getenv("DB_POOL_MODE") {
+	case "", "direct":
+	case "transaction":
+		config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+	default:
+		log.Fatal("DB_POOL_MODE must be direct or transaction")
+	}
+	db, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		log.Fatal("Invalid database configuration")
 	}
 	defer db.Close()
-	if err := migrate(ctx, db); err != nil {
+	migrateOnly := len(os.Args) == 2 && os.Args[1] == "migrate"
+	start := time.Now()
+	if err := migrate(ctx, db, migrateOnly || os.Getenv("DB_MIGRATION_MODE") != "manual"); err != nil {
 		log.Fatalf("database setup failed: %v", err)
+	}
+	log.Printf("Database schema ready in %s", time.Since(start).Round(time.Millisecond))
+	cancel()
+	if migrateOnly {
+		return
 	}
 	port := os.Getenv("PORT")
 	if port == "" {
