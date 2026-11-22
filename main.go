@@ -52,9 +52,18 @@ func write(w http.ResponseWriter, status int, value any) error {
 }
 
 func handler(fn endpoint) http.HandlerFunc {
+	return cachedHandler(fn, "no-store")
+}
+
+func publicCatalog(fn endpoint) http.HandlerFunc {
+	return cachedHandler(fn, "public, max-age=15, s-maxage=15")
+}
+
+func cachedHandler(fn endpoint, cache string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", cache)
 		if err := fn(w, r); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
 			var ae apiError
 			if !errors.As(err, &ae) {
 				log.Printf("%s %s: %v", r.Method, r.URL.Path, err)
@@ -739,24 +748,24 @@ func (a app) routes(static string) http.Handler {
 		}
 		return write(w, 200, map[string]bool{"ok": true})
 	}))
-	mux.HandleFunc("GET /api/home/banner", handler(func(w http.ResponseWriter, r *http.Request) error {
+	mux.HandleFunc("GET /api/home/banner", publicCatalog(func(w http.ResponseWriter, r *http.Request) error {
 		return queryJSON(w, a.db.QueryRow(r.Context(), `SELECT to_jsonb(p)||jsonb_build_object('campaigns',
  (SELECT jsonb_agg(to_jsonb(c) ORDER BY rank) FROM homepage_campaigns c))
  FROM promotions p ORDER BY id LIMIT 1`))
 	}))
-	mux.HandleFunc("GET /api/home/bestsellers", handler(a.home("bestsellers")))
-	mux.HandleFunc("GET /api/home/deals", handler(a.home("deals")))
+	mux.HandleFunc("GET /api/home/bestsellers", publicCatalog(a.home("bestsellers")))
+	mux.HandleFunc("GET /api/home/deals", publicCatalog(a.home("deals")))
 	for _, section := range []string{"recommended", "top-games", "gift-cards", "upcoming"} {
-		mux.HandleFunc("GET /api/home/"+section, handler(a.home(section)))
+		mux.HandleFunc("GET /api/home/"+section, publicCatalog(a.home(section)))
 	}
-	mux.HandleFunc("GET /api/home/gift-brands", handler(a.homeBrands))
-	mux.HandleFunc("GET /api/home/genres", handler(a.homeGenres))
+	mux.HandleFunc("GET /api/home/gift-brands", publicCatalog(a.homeBrands))
+	mux.HandleFunc("GET /api/home/genres", publicCatalog(a.homeGenres))
 	mux.HandleFunc("GET /api/home/recent", handler(a.recentlyViewed))
 	mux.HandleFunc("POST /api/newsletter", handler(a.subscribe))
-	mux.HandleFunc("GET /api/navigation", handler(a.navigation))
-	mux.HandleFunc("GET /api/products", handler(a.store))
-	mux.HandleFunc("GET /api/products/{slug}", handler(a.product))
-	mux.HandleFunc("GET /api/products/{slug}/recommendations", handler(a.recommendations))
+	mux.HandleFunc("GET /api/navigation", publicCatalog(a.navigation))
+	mux.HandleFunc("GET /api/products", publicCatalog(a.store))
+	mux.HandleFunc("GET /api/products/{slug}", publicCatalog(a.product))
+	mux.HandleFunc("GET /api/products/{slug}/recommendations", publicCatalog(a.recommendations))
 	mux.HandleFunc("GET /api/products/{slug}/reviews", handler(a.reviews))
 	mux.HandleFunc("POST /api/products/{slug}/reviews", handler(a.saveReview))
 	mux.HandleFunc("GET /api/filters", handler(func(w http.ResponseWriter, r *http.Request) error {

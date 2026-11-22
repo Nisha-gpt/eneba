@@ -71,9 +71,9 @@ function SettingsDialog({onClose,onSave,preferences}:{onClose:()=>void;onSave:(v
     onClick={event=>{if(event.target===event.currentTarget) onClose();}}>
     <form onSubmit={event=>{event.preventDefault();onSave(draft);}}>
       <div className="settings-head"><h2 id="settings-title">{t('Update your settings')}</h2><button type="button" aria-label={t('Close')} onClick={onClose}><X size={20}/></button></div>
-      <label>{t('Region')}<select value={draft.country} onChange={e=>setDraft({...draft,country:e.target.value})}>{Object.keys(countries).map(country=><option key={country}>{country}</option>)}</select></label>
-      <label>{t('Language')}<select value={draft.language} onChange={e=>setDraft({...draft,language:e.target.value as Preferences['language']})}><option value="en">English</option><option value="es">Español</option></select></label>
-      <label>{t('Currency')}<select value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value as Preferences['currency']})}>{Object.keys(currencyRates).map(currency=><option key={currency}>{currency}</option>)}</select></label>
+      <label>{t('Region')}<select aria-label={t('Region')} value={draft.country} onChange={e=>setDraft({...draft,country:e.target.value})}>{Object.keys(countries).map(country=><option key={country}>{country}</option>)}</select></label>
+      <label>{t('Language')}<select aria-label={t('Language')} value={draft.language} onChange={e=>setDraft({...draft,language:e.target.value as Preferences['language']})}><option value="en">English</option><option value="es">Español</option></select></label>
+      <label>{t('Currency')}<select aria-label={t('Currency')} value={draft.currency} onChange={e=>setDraft({...draft,currency:e.target.value as Preferences['currency']})}>{Object.keys(currencyRates).map(currency=><option key={currency}>{currency}</option>)}</select></label>
       <small>Currency equivalents use fixed demo rates. Orders and wallet balances are recorded in EUR.</small>
       <div className="actions"><button type="button" className="button secondary" onClick={onClose}>{t('Cancel')}</button><button className="button primary">{t('Save')}</button></div>
     </form>
@@ -100,7 +100,8 @@ async function api<T>(path:string, body?:unknown, signal?:AbortSignal):Promise<T
   return data as T;
 }
 
-function useData<T>(path:string): {data?:T; error?:string; previous?:T} {
+function useData<T>(path:string): {data?:T; error?:string; previous?:T; retry:()=>void} {
+  const [attempt,setAttempt]=useState(0);
   const [result,setResult] = useState<{path:string; data?:T; error?:string}>({path:''});
   useEffect(() => {
     const controller = new AbortController();
@@ -108,8 +109,9 @@ function useData<T>(path:string): {data?:T; error?:string; previous?:T} {
       if (!controller.signal.aborted) setResult({path,error:error.message});
     });
     return () => controller.abort();
-  },[path]);
-  return result.path === path ? result : {previous:result.data};
+  },[path,attempt]);
+  const retry=()=>{setResult({path:''});setAttempt(value=>value+1);};
+  return {...(result.path === path ? result : {previous:result.data}),retry};
 }
 
 function saved<T>(key:string, fallback:T):T {
@@ -117,10 +119,13 @@ function saved<T>(key:string, fallback:T):T {
   catch { return fallback; }
 }
 
-type Market = {preferences:Preferences;t:(text:string)=>string;money:(cents:number)=>string;openSettings:()=>void;navigation:{data?:Category[];error?:string};history:string[];recordView:(slug:string)=>void;deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
+type Market = {preferences:Preferences;t:(text:string)=>string;money:(cents:number)=>string;openSettings:()=>void;navigation:{data?:Category[];error?:string;retry:()=>void};history:string[];recordView:(slug:string)=>void;deliveryEmail:string|null;setDeliveryEmail:(email:string)=>void;quickOrder:Item|null; setQuickOrder:(item:Item|null)=>void; wishlist:string[]; toggleWishlist:(slug:string)=>void; cart:Item[]; setCart:(items:Item[])=>void; user:User|null|undefined; setUser:(u:User|null)=>void; sessionError:string; notice:(s:string)=>void};
 const MarketContext = createContext<Market>(null!);
 const useMarket = () => useContext(MarketContext);
 const ErrorText = ({message}:{message:string}) => <p className="feedback error" role="alert">{message}</p>;
+function RetryError({message,retry}:{message:string;retry:()=>void}) {
+  return <div className="section-error"><ErrorText message={message}/><button className="button secondary" onClick={retry}>Try again</button></div>;
+}
 const Loading = () => <p className="feedback" role="status">Loading…</p>;
 function Empty({title,children}:{title:string; children?:ReactNode}) {
   return <div className="empty"><Gamepad2 size={34}/><h2>{title}</h2>{children}</div>;
@@ -202,6 +207,16 @@ function Header() {
   const query = pathname.startsWith('/store') ? new URLSearchParams(search).get('q') ?? '' : '';
   const [value,setValue] = useState(query);
   const [drawer,setDrawer]=useState(false);
+  const [mobileSearch,setMobileSearch]=useState(false);
+  const searchDialog=useRef<HTMLDialogElement>(null);
+  useEffect(()=>{
+    if(!mobileSearch)return;
+    const dialog=searchDialog.current!;
+    const trigger=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    dialog.showModal();
+    dialog.querySelector('input')?.focus();
+    return ()=>{dialog.close();trigger?.focus();};
+  },[mobileSearch]);
   const links=(navigation.data??[]).filter(c=>c.nav_rank!==null).sort((a,b)=>a.nav_rank!-b.nav_rank!);
   useEffect(() => setValue(query),[query,pathname]);
   useEffect(()=>setDrawer(false),[pathname,search]);
@@ -209,16 +224,19 @@ function Header() {
     e.preventDefault();
     const params = new URLSearchParams();
     if (value.trim()) params.set('q',value.trim());
+    setMobileSearch(false);
     navigate('/store'+(params.size ? '?'+params : ''));
   }
-  return <header className="site-header">
-    <div className="wrap nav">
-      <Brand/>
-      <form className="search" onSubmit={submit} role="search">
+  const searchForm=()=><form className="search" onSubmit={submit} role="search">
         <Search size={22}/><input aria-label="Search games" placeholder={t('Search for games, top-ups and more')} value={value} onChange={e=>setValue(e.target.value)} maxLength={100}/>
         <button aria-label="Submit search"><ArrowRight size={17}/></button>
-      </form>
+      </form>;
+  return <header className="site-header">
+    <div className="wrap nav">
+      <div className="mobile-brand"><button className="mobile-icon mobile-menu" type="button" aria-label={t('Categories')} aria-haspopup="dialog" aria-expanded={drawer} onClick={()=>setDrawer(true)}><Menu size={22}/></button><Brand/></div>
+      {searchForm()}
       <div className="utilities">
+        <button className="mobile-icon mobile-search-open" aria-label="Open search" aria-haspopup="dialog" type="button" onClick={()=>setMobileSearch(true)}><Search size={23}/></button>
         <SettingsControl/>
         <Link className="icon-link" to="/wishlist" aria-label={`Wishlist, ${wishlist.length} items`}><Heart size={22}/>{wishlist.length>0&&<b>{wishlist.length}</b>}</Link>
         <Link className="bag" to="/cart" aria-label={`Cart, ${cart.reduce((sum,i)=>sum+i.quantity,0)} items`}><ShoppingCart size={22}/><b>{cart.reduce((sum,i)=>sum+i.quantity,0)}</b></Link>
@@ -231,11 +249,34 @@ function Header() {
       {links.map(c=><NavLink key={c.slug} to={categoryPath(c.slug)}>{t(c.name)}</NavLink>)}
       {navigation.data?.some(c=>c.slug==='gift-guide')&&<NavLink to="/store/gift-guide">Gift Guide</NavLink>}
     </nav></div>
+    {mobileSearch&&<dialog ref={searchDialog} className="mobile-search-dialog" aria-label="Search marketplace" onCancel={event=>{event.preventDefault();setMobileSearch(false);}} onClick={event=>{if(event.target===event.currentTarget)setMobileSearch(false);}}>
+      <div>{searchForm()}<button className="mobile-icon" type="button" aria-label="Close search" onClick={()=>setMobileSearch(false)}><X size={22}/></button></div>
+    </dialog>}
     {drawer&&<CategoryDrawer categories={navigation.data??[]} error={navigation.error} onClose={()=>setDrawer(false)}/>}
   </header>;
 }
 
-function ProductArtwork({product}:{product:Pick<CardProduct,'artwork'|'attributes'|'platform'>}) {
+let artworkObserver:IntersectionObserver|undefined;
+function DeferredArtwork({src}:{src:string}) {
+  const ref=useRef<HTMLImageElement>(null);
+  useEffect(()=>{
+    const img=ref.current!;
+    artworkObserver??=new IntersectionObserver(entries=>{
+      for(const entry of entries){
+        if(!entry.isIntersecting)continue;
+        const image=entry.target as HTMLImageElement;
+        if(image.dataset.src)image.src=image.dataset.src;
+        artworkObserver?.unobserve(image);
+      }
+    },{rootMargin:'220px'});
+    artworkObserver.observe(img);
+    return ()=>artworkObserver?.unobserve(img);
+  },[src]);
+  return <img ref={ref} data-src={src} alt="" fetchPriority="low" onError={e=>e.currentTarget.hidden=true}/>;
+}
+
+function ProductArtwork({product,defer=false}:{product:Pick<CardProduct,'artwork'|'attributes'|'platform'>;defer?:boolean}) {
+  if(product.artwork && defer)return <DeferredArtwork src={product.artwork}/>;
   if(product.artwork) return <img src={product.artwork} alt="" loading="lazy" onError={e=>e.currentTarget.hidden=true}/>;
   return <div className={'catalog-art art-'+(product.attributes.tone??'violet')} aria-hidden="true">
     <div>{product.attributes.type==='Software'?<Monitor size={40}/>:<Gift size={40}/>}<strong>{product.attributes.brand??product.platform}</strong>
@@ -263,7 +304,7 @@ function Card({product,actions=false}:{product:CardProduct;actions?:boolean}) {
     <Link className="card" to={'/product/'+product.slug}>
       <div className={'poster tone-'+product.id%6}>
         <span className="poster-fallback" aria-hidden="true">{product.name}</span>
-        <ProductArtwork product={product}/>
+        <ProductArtwork product={product} defer={actions}/>
         <span className="tag">{product.platform}</span>
       </div>
       <div className="card-body"><h3>{product.name}</h3><div className="eyebrow region" data-global={product.region==='Global'}>{product.region}</div>
@@ -271,7 +312,7 @@ function Card({product,actions=false}:{product:CardProduct;actions?:boolean}) {
       </div>
     </Link>
     {actions&&<div className="carousel-card-actions">
-      <button className="button primary" disabled={!offer} onClick={add}>{t('Add to cart')}</button>
+      <button className="button primary" disabled={!offer} onClick={add} aria-label={t('Add to cart')}><span>{t('Add to cart')}</span><ShoppingCart className="mobile-cart-icon" size={20}/></button>
       <Link className="button secondary" to={'/product/'+product.slug+'#seller-offers'}>{t('View offers')}</Link>
     </div>}
     <button className="wishlist-toggle" aria-label={`${saved?'Remove':'Save'} ${product.name} ${saved?'from':'to'} wishlist`} aria-pressed={saved} onClick={()=>toggleWishlist(product.slug)}><Heart size={18} fill={saved?'currentColor':'none'}/></button>
@@ -324,9 +365,9 @@ function Carousel({children,label,kind='products'}:{children:ReactNode;label:str
 
 function Collection({path,background=false}:{path:string;background?:boolean}) {
   const {t}=useMarket();
-  const {data,error}=useData<{title:string;label:string;browse_path:string;items:CardProduct[]}>('/home/'+path);
-  return <section className={'home-band'+(background?' home-band-deep':'')}>
-    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+  const {data,error,retry}=useData<{title:string;label:string;browse_path:string;items:CardProduct[]}>('/home/'+path);
+  return <section className={'home-band home-product-band'+(background?' home-band-deep':'')} aria-busy={!data&&!error}>
+    {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:<>
       <h2>{t(data.title)}</h2>
       {data.items.length?<Carousel label={t(data.title)}>{data.items.map(p=><Card key={p.id} product={p} actions/>)}</Carousel>:<p>No products in this collection.</p>}
       <div className="home-show-all"><Link className="button secondary" to={data.browse_path}>{t('Show all')}</Link></div>
@@ -337,25 +378,28 @@ function Collection({path,background=false}:{path:string;background?:boolean}) {
 function RecentlyViewed({history}:{history:string[]}) {
   const {t}=useMarket();
   const query=new URLSearchParams(history.map(slug=>['slug',slug]));
-  const {data,error}=useData<CardProduct[]>('/home/recent?'+query);
-  return <section className="home-band">
+  const {data,error,retry}=useData<CardProduct[]>('/home/recent?'+query);
+  return <section className="home-band recent-band" aria-busy={!data&&!error}>
     <h2>{t('Recently viewed')}</h2>
-    {error?<ErrorText message={error}/>:!data?<Loading/>:data.length
+    {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:data.length
       ?<Carousel label={t('Recently viewed')}>{data.map(p=><Card key={p.id} product={p} actions/>)}</Carousel>
       :<p>No recently viewed products yet.</p>}
   </section>;
 }
 
-function GiftBrands() {
+type GiftBrand={name:string;tone:string};
+function GiftBrands({brands,popular=false}:{brands:{data?:GiftBrand[];error?:string;retry:()=>void};popular?:boolean}) {
   const {t}=useMarket();
-  const {data,error}=useData<{name:string;tone:string}[]>('/home/gift-brands');
-  const label=t('Best selling eGift Cards');
-  return <section className="home-band">
+  const {data,error,retry}=brands;
+  const label=t(popular?'Popular gift cards':'Best selling eGift Cards');
+  const preferred=['Google Play','Netflix','Spotify','Uber','Eneba','Apple'];
+  const items=popular&&data?data.filter(brand=>preferred.includes(brand.name)).sort((a,b)=>preferred.indexOf(a.name)-preferred.indexOf(b.name)):data;
+  return <section className={'home-band'+(popular?' popular-gifts':'')}>
     <h2>{label}</h2>
-    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
-      <Carousel label={label} kind="brands">{data.map(brand=><Link key={brand.name} className={'brand-tile art-'+brand.tone}
+    {error?<RetryError message={error} retry={retry}/>:!items?<Loading/>:<>
+      <Carousel label={label} kind="brands">{items.map(brand=><Link key={brand.name} className={'brand-tile art-'+brand.tone}
         to={'/store/e-gift-cards?'+new URLSearchParams({brand:brand.name})}><Gift size={33}/><strong>{brand.name}</strong></Link>)}</Carousel>
-      <div className="home-show-all"><Link className="button secondary" to="/store/e-gift-cards">{t('Show all')}</Link></div>
+      {!popular&&<div className="home-show-all"><Link className="button secondary" to="/store/e-gift-cards">{t('Show all')}</Link></div>}
     </>}
   </section>;
 }
@@ -365,12 +409,12 @@ const genreIcons:Record<string,typeof Gamepad2>={
   Strategy:Target,Racing:Flag,'Role Playing':ShieldCheck,Puzzle:Gamepad2,Survival:Flame,
 };
 function HomepageGenres() {
-  const {data,error}=useData<{name:string;count:number}[]>('/home/genres');
+  const {data,error,retry}=useData<{name:string;count:number}[]>('/home/genres');
   const {t}=useMarket();
   const [limit,setLimit]=useState(7);
   return <section className="home-band home-genres">
     <h2>{t('Categories')}</h2>
-    {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+    {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:<>
       <div className="genre-tiles">{data.slice(0,limit).map(genre=>{
         const Icon=genreIcons[genre.name]??Gamepad2;
         return <Link key={genre.name} to={'/store/games?'+new URLSearchParams({genre:genre.name})}>
@@ -383,13 +427,14 @@ function HomepageGenres() {
 }
 
 function Home() {
-  const {data,error}=useData<Banner>('/home/banner');
+  const {data,error,retry}=useData<Banner>('/home/banner');
+  const brands=useData<GiftBrand[]>('/home/gift-brands');
   const {history,navigation,t}=useMarket();
   const shortcuts=(navigation.data??[]).filter(c=>!c.parent||['steam','eneba-gift-cards'].includes(c.slug)).filter(c=>c.slug!=='cheap-games');
   return <>
     <div className="campaign-strip">
       <section className="hero">
-        {error?<ErrorText message={error}/>:!data?<Loading/>:<>
+        {error?<RetryError message={error} retry={retry}/>:!data?<Loading/>:<>
           <picture>{data.mobile_artwork&&<source media="(max-width: 720px)" srcSet={data.mobile_artwork}/>}<img className="hero-art" src={data.artwork} alt="" fetchPriority="high" onError={e=>e.currentTarget.hidden=true}/></picture>
           <div className="hero-content">
             <div className="eyebrow hero-tag"><span/>{data.eyebrow}</div>
@@ -404,16 +449,17 @@ function Home() {
       </Link>)}
     </div>
     <div className="home-shortcuts" id="market">
-    {navigation.error?<ErrorText message={navigation.error}/>:navigation.data?
+    {navigation.error?<RetryError message={navigation.error} retry={navigation.retry}/>:navigation.data?
       <Carousel label="Category shortcuts" kind="shortcuts">{shortcuts.map(category=>{
         const Icon=marketplaceLinks.find(link=>link.path===categoryPath(category.slug))?.icon??Gamepad2;
         return <Link key={category.slug} to={categoryPath(category.slug)}><Icon size={26}/>{t(category.name)}</Link>;
       })}</Carousel>:<Loading/>}
     </div>
+    <GiftBrands brands={brands} popular/>
     {history.length>0&&<RecentlyViewed history={history}/>}
     <Collection path="recommended"/>
     <Collection path="top-games" background/>
-    <GiftBrands/>
+    <GiftBrands brands={brands}/>
     <Collection path="gift-cards" background/>
     <Collection path="upcoming"/>
     <Collection path="deals" background/>
@@ -655,7 +701,7 @@ function ProductPage() {
     navigate('/cart');
   }
   if (error) return <ErrorText message={error}/>;
-  if (!data) return <Loading/>;
+  if (!data) return <div className="inner product-pending"><Loading/></div>;
   const available=data.offers.filter(offer=>offer.stock>0);
   const featured=available[0];
   const others=available.slice(1);
