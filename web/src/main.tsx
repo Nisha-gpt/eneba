@@ -114,6 +114,22 @@ function useData<T>(path:string): {data?:T; error?:string; previous?:T; retry:()
   return {...(result.path === path ? result : {previous:result.data}),retry};
 }
 
+// Upgrade storage from the original demo so an unfinished payment can reuse its request ID.
+function migrateBrowserStorage() {
+  try {
+    for (const suffix of ['cart', 'checkout']) {
+      const previous = 'keyshift.' + suffix;
+      const current = 'eneba.' + suffix;
+      const value = localStorage.getItem(previous);
+      if (value === null) continue;
+      if (localStorage.getItem(current) === null) localStorage.setItem(current, value);
+      localStorage.removeItem(previous);
+    }
+  } catch {
+    // Storage may be restricted by browser settings.
+  }
+}
+
 function saved<T>(key:string, fallback:T):T {
   try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; }
   catch { return fallback; }
@@ -894,7 +910,7 @@ function Cart({checkout=false}:{checkout?:boolean}) {
   const items=cart.map(({offer,quantity})=>({offer,quantity})).sort((a,b)=>a.offer-b.offer);
   const itemJSON=JSON.stringify(items);
   const basket=JSON.stringify({account:user?.email,deliveryEmail:email,items});
-  const savedPayment=saved<PendingPayment|null>('keyshift.checkout',null);
+  const savedPayment=saved<PendingPayment|null>('eneba.checkout',null);
   const pending=savedPayment?.basket===basket?savedPayment:null;
   const unavailable=quote?.items.some(i=>!i.name || i.available<i.quantity);
   const payable=pending?.cents ?? quote?.cents;
@@ -955,18 +971,18 @@ function Cart({checkout=false}:{checkout?:boolean}) {
     setError('');
     const id=pending?.id ?? crypto.randomUUID();
     try {
-      localStorage.setItem('keyshift.checkout',JSON.stringify({basket,scenario,cents:payable,id}));
+      localStorage.setItem('eneba.checkout',JSON.stringify({basket,scenario,cents:payable,id}));
       const order=await api<{id:number}>('/checkout',{items,payment:scenario,expectedCents:payable,requestId:id,deliveryEmail:email.trim()});
       if(quick) setQuickOrder(null);
       else setCart([]);
-      localStorage.removeItem('keyshift.checkout');
+      localStorage.removeItem('eneba.checkout');
       navigate('/orders/'+order.id,{replace:true});
     } catch (err) {
       if (err instanceof RequestError && err.status===401) {
         navigate(signIn);
       } else {
         if (err instanceof RequestError && [400,402,409].includes(err.status)) {
-          localStorage.removeItem('keyshift.checkout');
+          localStorage.removeItem('eneba.checkout');
           if (err.status===409) refreshQuote(version=>version+1);
         }
         setError((err as Error).message);
@@ -1268,7 +1284,7 @@ function App() {
     sessionStorage.setItem('eneba.delivery-email',email);
     updateDeliveryEmail(email);
   }
-  const [cart,updateCart]=useState(()=>saved<Item[]>('keyshift.cart',[]));
+  const [cart,updateCart]=useState(()=>saved<Item[]>('eneba.cart',[]));
   const [quickOrder,updateQuickOrder]=useState<Item|null>(()=>{
     try {return JSON.parse(sessionStorage.getItem('eneba.buy-now')??'null');}
     catch {return null;}
@@ -1305,7 +1321,7 @@ function App() {
   }, []);
   useEffect(()=>{if(!window.location.hash)window.scrollTo(0,0);},[pathname]);
   useEffect(()=>{if (!toast) return;const timer=setTimeout(()=>setToast(''),3000);return ()=>clearTimeout(timer);},[toast]);
-  function setCart(items:Item[]) {localStorage.setItem('keyshift.cart',JSON.stringify(items));updateCart(items);}
+  function setCart(items:Item[]) {localStorage.setItem('eneba.cart',JSON.stringify(items));updateCart(items);}
   return <MarketContext.Provider value={{cart,setCart,user,setUser,sessionError,notice:setToast,wishlist,toggleWishlist,quickOrder,setQuickOrder,deliveryEmail,setDeliveryEmail,preferences,t,money,openSettings:()=>setSettings(true),navigation,history,recordView}}>
     {step?<CheckoutHeader step={step} quick={quick}/>:<Header/>}
     <main className="wrap"><Routes>
@@ -1325,4 +1341,5 @@ function App() {
   </MarketContext.Provider>;
 }
 
+migrateBrowserStorage();
 createRoot(document.getElementById('root')!).render(<BrowserRouter><App/></BrowserRouter>);

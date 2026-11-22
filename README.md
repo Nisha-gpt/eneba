@@ -7,10 +7,10 @@ An unofficial recreation for the Eneba internship assignment. The design follows
 Requirements are Go 1.25 or later, Node 24, npm, and PostgreSQL 17 with the `pg_trgm` extension available. An existing PostgreSQL instance works. For a local Docker database:
 
 ```sh
-docker run -d --name keyshift-db \
+docker run -d --name eneba-db \
   -e POSTGRES_USER=market -e POSTGRES_PASSWORD=market -e POSTGRES_DB=market \
   -p 127.0.0.1:5432:5432 postgres:17-alpine
-docker exec keyshift-db pg_isready -U market -d market
+docker exec eneba-db pg_isready -U market -d market
 ```
 
 From the repository root:
@@ -24,7 +24,7 @@ set +a
 go run .
 ```
 
-Open http://localhost:8080. Leave the Go process running and use `cd web && KEYSHIFT_DEV_API_URL=http://localhost:8080 npm run dev` for Vite hot reload. This sets the API proxy for standalone Vite only. When editing artwork, rebuild the production frontend to refresh the Go-served copy.
+Open http://localhost:8080. Leave the Go process running and use `cd web && ENEBA_DEV_API_URL=http://localhost:8080 npm run dev` for Vite hot reload. This sets the API proxy for standalone Vite only. When editing artwork, rebuild the production frontend to refresh the Go-served copy.
 
 `DATABASE_URL` is required. `PORT` defaults to 8080 and `STATIC_DIR` defaults to `web/dist`. HTTPS deployments use secure cookies by default. The example disables that flag for local HTTP. Database migrations and seed data run once per database at startup, under a PostgreSQL advisory lock. Startup fails if database access or migration fails.
 

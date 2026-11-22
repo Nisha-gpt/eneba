@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: keyshift-market
+    name: eneba-internship-market
     runtime: docker
     plan: free
     healthCheckPath: /api/health
